@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>UnitRise Gate Bridge</title>
+<style>
+  /* Rise design language — mirrors src/brand/unitrise.js in the platform:
+     paper canvas, white cards + hairlines, ink type, amber accent, pills. */
+  :root{
+    --paper:#FAF8F5; --card:#FFFFFF; --card-soft:#FBFAF8; --line:#E9E5DC;
+    --ink:#111322; --body:#4B4E63; --muted:#8A8DA3;
+    --amber:#F59E0B; --amber-deep:#B45309; --amber-wash:#FEF3C7;
+    --indigo:#1E1B4B; --success:#22C55E; --success-wash:#DCFCE7;
+    --danger:#EF4444; --danger-wash:rgba(239,68,68,.08);
+  }
+  *{box-sizing:border-box} html,body{margin:0}
+  body{background:var(--paper);color:var(--ink);font:14px/1.5 -apple-system,"Segoe UI",Inter,Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:880px;margin:0 auto;padding:28px 20px 48px}
+  header{display:flex;align-items:center;gap:12px;margin-bottom:22px}
+  .hex{width:38px;height:38px;flex:none}
+  .wordmark{font-weight:900;letter-spacing:-.03em;font-size:20px}
+  .wordmark b{color:var(--amber);font-weight:900}
+  .sub{color:var(--muted);font-size:12px;margin-left:auto;text-align:right}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:640px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px}
+  .card h2{margin:0 0 10px;font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:var(--muted);font-weight:800}
+  dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13px}
+  dt{color:var(--muted)} dd{margin:0;color:var(--ink);font-weight:600;word-break:break-all}
+  .statusband{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 18px;margin-bottom:14px}
+  .dot{width:10px;height:10px;border-radius:99px;background:var(--success);box-shadow:0 0 0 4px var(--success-wash);flex:none}
+  .dot.bad{background:var(--danger);box-shadow:0 0 0 4px var(--danger-wash)}
+  .statusband .msg{font-weight:700}
+  .statusband .msg small{display:block;font-weight:400;color:var(--muted);font-size:12px}
+  .pill{appearance:none;border:0;cursor:pointer;border-radius:999px;padding:9px 18px;font-weight:700;font-size:13px;
+        background:var(--amber);color:var(--indigo);transition:transform .15s ease;margin-left:auto}
+  .pill:hover{transform:translateY(-2px)}
+  .pill.ghost{background:var(--card);color:var(--ink);border:1px solid var(--line);margin-left:8px}
+  .logcard{margin-top:14px}
+  .log{background:var(--indigo);color:#DDE1FF;border-radius:12px;padding:14px;font:12px/1.6 ui-monospace,Menlo,Consolas,monospace;
+       height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+  .log .err{color:#FCA5A5}
+  .chip{display:inline-block;background:var(--amber-wash);color:var(--amber-deep);border-radius:999px;
+        padding:2px 10px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em}
+  footer{margin-top:18px;color:var(--muted);font-size:12px;text-align:center}
+  a{color:#4338CA}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <!-- hexagon mark: the falcon logo's frame, drawn (no image asset needed) -->
+    <svg class="hex" viewBox="0 0 100 100" aria-hidden="true">
+      <polygon points="50,4 92,27 92,73 50,96 8,73 8,27" fill="none" stroke="#111322" stroke-width="5"/>
+      <polygon points="50,22 76,36 76,64 50,78 24,64 24,36" fill="#F59E0B"/>
+    </svg>
+    <div>
+      <div class="wordmark">Unit<b>Rise</b> Gate Bridge</div>
+      <div style="color:var(--muted);font-size:12px">Syncs gate codes from UnitRise to your gate software</div>
+    </div>
+    <div class="sub">agent <span id="ver">—</span><br/><span id="uptime"></span></div>
+  </header>
+
+  <div class="statusband">
+    <span class="dot" id="dot"></span>
+    <div class="msg"><span id="statusMsg">Connecting…</span><small id="statusSub"></small></div>
+    <button class="pill" id="forceBtn">Force full update</button>
+    <button class="pill ghost" onclick="location.reload()">Refresh</button>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Facility</h2>
+      <dl>
+        <dt>Name</dt><dd id="facName">—</dd>
+        <dt>Provider</dt><dd><span class="chip" id="provider">—</span></dd>
+        <dt>Codes</dt><dd id="codes">—</dd>
+        <dt>Poll every</dt><dd id="poll">—</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <h2>Gate handoff</h2>
+      <dl>
+        <dt>Folder</dt><dd id="savePath">—</dd>
+        <dt>File</dt><dd id="targetFile">—</dd>
+        <dt>Consume</dt><dd id="consume">—</dd>
+        <dt>Last apply</dt><dd id="lastApply">—</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="card logcard">
+    <h2>Activity</h2>
+    <div class="log" id="log">…</div>
+  </div>
+
+  <footer>UnitRise Gate Bridge · this page is served locally by the agent (127.0.0.1) · <a href="https://unitrise.com/help" target="_blank" rel="noreferrer">Help center</a></footer>
+</div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const fmtT = (iso) => { const d = new Date(iso); return isNaN(d) || d.getFullYear() < 2000 ? "never" : d.toLocaleString(); };
+  const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  async function tick() {
+    try {
+      const r = await fetch("/api/status"); const s = await r.json();
+      $("ver").textContent = s.agentVersion;
+      $("uptime").textContent = "up since " + fmtT(s.startedAt);
+      $("facName").textContent = s.facilityName || "(not yet pulled)";
+      $("provider").textContent = s.provider || "—";
+      $("codes").textContent = s.codeCount;
+      $("poll").textContent = s.pollSeconds ? s.pollSeconds + "s" : "—";
+      $("savePath").textContent = s.savePath || "—";
+      $("targetFile").textContent = s.targetFile || "—";
+      $("consume").textContent = s.consumeCmd || "(none)";
+      $("lastApply").textContent = fmtT(s.lastApplyAt);
+      $("dot").className = "dot" + (s.ok ? "" : " bad");
+      $("statusMsg").textContent = s.ok ? "Service is running" : "Attention needed";
+      $("statusSub").textContent = s.ok
+        ? (s.lastHash ? "in sync · state " + s.lastHash.slice(0, 12) + "…" : "waiting for first sync")
+        : (s.detail || "last cycle failed — see activity");
+      const log = $("log");
+      const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+      log.innerHTML = s.log.map((l) => l.startsWith("Error") ? '<span class="err">' + esc(l) + "</span>" : esc(l)).join("\n") || "…";
+      if (atBottom) log.scrollTop = log.scrollHeight;
+    } catch {
+      $("dot").className = "dot bad";
+      $("statusMsg").textContent = "Agent not reachable";
+      $("statusSub").textContent = "the service may be stopped";
+    }
+  }
+  $("forceBtn").onclick = async () => {
+    $("forceBtn").disabled = true;
+    try { await fetch("/api/force", { method: "POST" }); } finally { setTimeout(() => ($("forceBtn").disabled = false), 1500); }
+  };
+  tick(); setInterval(tick, 2000);
+</script>
+</body>
+</html>

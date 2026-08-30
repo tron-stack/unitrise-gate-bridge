@@ -1,0 +1,4 @@
+dist/
+*.log
+config.json
+.DS_Store
