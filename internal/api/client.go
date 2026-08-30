@@ -37,11 +37,29 @@ type Credential struct {
 	TimeZoneGroup int    `json:"timeZoneGroup"`
 }
 
+// FormatSpec is the server-editable vendor file template (contract
+// §settings.format). The agent interpolates it — format fixes are console
+// edits that arrive on the next poll, never agent redeploys.
+type FormatSpec struct {
+	Preset        string `json:"preset"`
+	Mode          string `json:"mode"` // full | delta
+	Header        string `json:"header"`
+	Line          string `json:"line"`
+	SuspendedLine string `json:"suspendedLine"`
+	AddedLine     string `json:"addedLine"`
+	ChangedLine   string `json:"changedLine"`
+	RemovedLine   string `json:"removedLine"`
+	Footer        string `json:"footer"`
+	LineEnding    string `json:"lineEnding"` // crlf | lf
+	SortBy        string `json:"sortBy"`     // code | unit | name | none
+}
+
 type StateSettings struct {
-	GeneratedFileName string `json:"generatedFileName"`
-	ConsumeCommand    string `json:"consumeCommand"`
-	DefaultTimeZone   int    `json:"defaultTimeZone"`
-	PollSeconds       int    `json:"pollSeconds"`
+	GeneratedFileName string      `json:"generatedFileName"`
+	ConsumeCommand    string      `json:"consumeCommand"`
+	DefaultTimeZone   int         `json:"defaultTimeZone"`
+	PollSeconds       int         `json:"pollSeconds"`
+	Format            *FormatSpec `json:"format"`
 }
 
 type State struct {
@@ -53,7 +71,10 @@ type State struct {
 	} `json:"facility"`
 	Provider    string        `json:"provider"`
 	Settings    StateSettings `json:"settings"`
-	Credentials []Credential  `json:"credentials"`
+	// Delta renderers key "force full update" off this: a changed nonce means
+	// re-emit the whole roster as adds, not an empty diff.
+	ForceNonce  int          `json:"forceNonce"`
+	Credentials []Credential `json:"credentials"`
 }
 
 // sign produces the headers per the contract:

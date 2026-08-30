@@ -41,13 +41,27 @@ Headers: signing headers + optional `If-None-Match: "<stateHash>"`.
 {
   "stateHash": "sha256-of-canonical-state",
   "facility": { "name": "...", "address": "...", "phone": "..." },
-  "provider": "unitrise_test",
+  "provider": "template",
   "settings": {
     "generatedFileName": "UPDATE.DAT",
     "consumeCommand": "Ptisend.bat",
     "defaultTimeZone": 1,
-    "pollSeconds": 300
+    "pollSeconds": 300,
+    "format": {
+      "preset": "pti_falcon",
+      "mode": "full",
+      "header": "",
+      "line": "{code},{unit},{tenant},{tz}",
+      "suspendedLine": "",
+      "addedLine": "",
+      "changedLine": "",
+      "removedLine": "",
+      "footer": "",
+      "lineEnding": "crlf",
+      "sortBy": "code"
+    }
   },
+  "forceNonce": 0,
   "credentials": [
     {
       "code": "482913",
@@ -59,6 +73,49 @@ Headers: signing headers + optional `If-None-Match: "<stateHash>"`.
   ]
 }
 ```
+
+`provider` selects the agent's renderer: `"template"` (the server carries a
+renderable `settings.format`) or `"unitrise_test"` (the verification file —
+file_bridge's default until a format is configured).
+
+### `settings.format` — the server-driven vendor template
+
+Vendor gate-file layouts are per-site artifacts (specs are partner-only paper
+that drifts between versions), so the layout is DATA the console edits, not
+agent code. A format fix reaches the site on the next poll; the agent binary
+never changes for it.
+
+Placeholders, usable in every template string:
+
+| Placeholder | Meaning |
+|---|---|
+| `{code}` `{unit}` `{tenant}` `{tz}` `{status}` | per-credential fields |
+| `{facility}` `{date}` `{time}` `{count}` | file-level (header/footer; count = credential lines emitted) |
+| `{code:pad10}` | zero-pad left to width |
+| `{tenant:width20}` | space-pad right + truncate |
+| `{unit:rwidth6}` | space-pad left + truncate |
+
+Modes:
+
+- **`full`** — the file is the complete roster each write. Suspended codes
+  render via `suspendedLine`; when it's blank they are OMITTED (removal is the
+  lockout for formats that can't express suspension).
+- **`delta`** — op-coded change lines against the roster this agent last
+  applied (`addedLine`/`changedLine`/`removedLine`, e.g. WinSen's A/E-prefixed
+  update.txt). The roster persists at `<config dir>/last-roster.json` and is
+  committed only after the vendor file lands on disk. A suspension that the
+  format can't express (`suspendedLine` blank) emits as a REMOVE op, and the
+  code leaves the roster so a later restore re-emits as an add. A blank
+  `removedLine` means removals are inexpressible and are skipped.
+
+Every line — including the last — ends with the configured line ending
+(`crlf` default; DOS-lineage importers require the trailing carriage return).
+
+**Force semantics:** the state carries `forceNonce`. When it differs from the
+roster's remembered nonce (console "Force full update"), or the agent's local
+Force button was pressed, delta mode treats the roster as empty and re-emits
+the entire roster as adds; full mode simply rewrites. This is also the recovery
+path when a consume run fails after the file was written.
 
 Semantics: **full state, every time.** The list is the complete set of codes
 that should exist at the gate. Suspended codes are included with
@@ -89,6 +146,14 @@ Body: `{ "stateHash": "...", "wroteFile": "C:\\PTI\\UPDATE.DAT",
 "consumeExit": 0, "consumeOutput": "<first 2KB>" }`
 
 Audit trail: the console shows "last applied" + consume output per facility.
+
+### `GET /api/gate-bridge/download/:platform` (public, unsigned)
+
+Stable installer URLs for the setup email/console: platforms
+`windows-amd64` · `darwin-arm64` · `darwin-amd64` · `linux-amd64`. 302s to the
+deploy-configured hosting (`GATE_BRIDGE_DOWNLOAD_BASE`); 404 with a friendly
+message until binaries are published. Mounted ABOVE the signing middleware —
+an IT person clicks this before any credentials exist.
 
 ### `GET /api/gate-bridge/v1/update-check` (stub in v1)
 

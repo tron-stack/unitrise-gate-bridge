@@ -46,10 +46,13 @@ type Syncer struct {
 }
 
 func New(cfg *config.Config, log *logging.Logger) *Syncer {
+	// The template renderer's delta memory lives beside the config file.
+	render.RosterPath = filepath.Join(config.Dir(), "last-roster.json")
 	return &Syncer{cfg: cfg, client: api.New(cfg), log: log, force: make(chan struct{}, 1)}
 }
 
 func (s *Syncer) ForceFullUpdate() {
+	render.ForceNextFull() // delta formats re-emit the whole roster
 	select {
 	case s.force <- struct{}{}:
 	default:
@@ -172,6 +175,11 @@ func (s *Syncer) apply(st *api.State) error {
 		return fmt.Errorf("rename into place: %w", err)
 	}
 	s.log.Infof("wrote %s (%d bytes)", target, len(data))
+	// The file is the interface: now that it landed, remember what it told
+	// the gate (delta formats diff against this next cycle).
+	if err := render.CommitApplied(); err != nil {
+		s.log.Errorf("roster save: %v", err)
+	}
 	status.Update(func(v *status.Snapshot) { v.TargetFile = target })
 
 	exit, out := s.consume(st)
