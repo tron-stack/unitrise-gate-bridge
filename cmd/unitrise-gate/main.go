@@ -11,6 +11,7 @@
 //	unitrise-gate test        verify credentials + write a probe file
 //	unitrise-gate run         foreground loop (also the service entrypoint)
 //	unitrise-gate force       one full update now, then exit
+//	unitrise-gate update      download + swap in the latest published agent
 //	unitrise-gate service …   install | uninstall | start | stop
 //	unitrise-gate version
 package main
@@ -26,6 +27,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/api"
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/config"
@@ -34,6 +36,7 @@ import (
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/status"
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/syncer"
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/ui"
+	"github.com/mytruckyards/unitrise-gate-bridge/internal/update"
 )
 
 func main() {
@@ -55,10 +58,12 @@ func main() {
 		err = serviceCmd()
 	case "ui":
 		err = openUI()
+	case "update":
+		err = updateCmd()
 	case "version", "--version", "-v":
 		fmt.Printf("unitrise-gate %s (contract %s)\n", api.AgentVersion, api.ContractVersion)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: unitrise-gate [pair|test|run|force|ui|service|version]\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: unitrise-gate [pair|test|run|force|ui|update|service|version]\n", cmd)
 		os.Exit(2)
 	}
 	if err != nil {
@@ -100,6 +105,18 @@ func run(forceOnce bool) error {
 			log.Infof("dashboard at %s", addr)
 		}
 	}
+	// Once at startup and daily after: log when a newer agent is published.
+	// LOG-ONLY - the swap is always a person running `unitrise-gate update`
+	// (the console shows the same "update available" chip from heartbeats).
+	go func() {
+		client := api.New(cfg)
+		for {
+			if info, newer, err := update.CheckOnly(client); err == nil && newer {
+				log.Infof("agent %s is available (running %s) - run `unitrise-gate update` on this PC to take it", info.LatestVersion, api.AgentVersion)
+			}
+			time.Sleep(24 * time.Hour)
+		}
+	}()
 	loop := func(ctx context.Context) {
 		if forceOnce {
 			// One forced cycle, then leave - used by installers and support.
@@ -129,6 +146,25 @@ func run(forceOnce bool) error {
 		return nil
 	}
 	loop(ctx)
+	return nil
+}
+
+// updateCmd is the person-run binary swap (internal/update). Requires a
+// paired config for the signed update-check; a running service keeps working
+// on the old mapped image until it's restarted.
+func updateCmd() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("no config (%v) - run `unitrise-gate pair` first", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	msg, err := update.SelfUpdate(api.New(cfg))
+	if err != nil {
+		return err
+	}
+	fmt.Println(msg)
 	return nil
 }
 

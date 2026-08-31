@@ -173,3 +173,55 @@ type Applied struct {
 func (c *Client) ReportApplied(a Applied) error {
 	return c.postJSON("/api/gate-bridge/"+ContractVersion+"/applied", a)
 }
+
+// UpdateInfo is the server's published-agent answer: what the newest version
+// is and where this platform's binary lives (nil URLs until binaries are
+// published server-side).
+type UpdateInfo struct {
+	LatestVersion string `json:"latestVersion"`
+	DownloadURL   string `json:"downloadUrl"`
+	Sha256URL     string `json:"sha256Url"`
+}
+
+// UpdateCheck asks the server for the latest published agent version for the
+// given platform key (e.g. "windows-amd64").
+func (c *Client) UpdateCheck(platform string) (*UpdateInfo, error) {
+	path := "/api/gate-bridge/" + ContractVersion + "/update-check"
+	req, err := http.NewRequest(http.MethodGet, c.cfg.APIEndpoint+path+"?platform="+platform, nil)
+	if err != nil {
+		return nil, err
+	}
+	// Signed like every other v1 call (the query string is not part of the
+	// signature base - the path is, matching the server's check).
+	c.sign(req, path, nil)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("update-check failed: %d %s", resp.StatusCode, bytes.TrimSpace(b))
+	}
+	var info UpdateInfo
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+// Download fetches an arbitrary URL (the published binary / checksum file).
+// Uses its own long-timeout client - a binary over site DSL can outlast the
+// API client's 30s budget. Returns the raw bytes, capped at 256MB.
+func (c *Client) Download(url string) ([]byte, error) {
+	dl := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := dl.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download failed: %d for %s", resp.StatusCode, url)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, 256<<20))
+}

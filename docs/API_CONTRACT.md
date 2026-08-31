@@ -155,11 +155,21 @@ deploy-configured hosting (`GATE_BRIDGE_DOWNLOAD_BASE`); 404 with a friendly
 message until binaries are published. Mounted ABOVE the signing middleware -
 an IT person clicks this before any credentials exist.
 
-### `GET /api/gate-bridge/v1/update-check` (stub in v1)
+### `GET /api/gate-bridge/v1/update-check?platform=<key>` (signed)
 
-`{ "latestVersion": "1.0.0", "downloadUrl": null }` - reserved for
-storEDGE-style auto-update; the agent only reports availability in v1,
-it does not self-replace.
+`{ "latestVersion": "0.3.0", "downloadUrl": "<base>/<file>|null", "sha256Url":
+"<base>/SHA256SUMS|null" }`. `latestVersion` comes from the backend's
+`GATE_AGENT_LATEST_VERSION` env (bumped when binaries are published); URLs are
+null until `GATE_BRIDGE_DOWNLOAD_BASE` is set. Platform keys match the
+download endpoint. The query string is NOT part of the signature base (both
+sides sign the bare path).
+
+The agent NEVER self-replaces on its own: the run loop checks daily and only
+logs availability (the console shows the same chip from heartbeat versions);
+the swap is `unitrise-gate update`, run by a person on the site PC. That
+command downloads the platform binary, verifies it against `SHA256SUMS` when
+published (mismatch = hard abort), renames the running binary to `.old`, moves
+the new one in place, and prints the service-restart step.
 
 ## Failure semantics (both sides must honor)
 
