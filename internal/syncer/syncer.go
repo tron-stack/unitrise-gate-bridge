@@ -4,7 +4,7 @@
 //	every N seconds (default 300):
 //	  pull desired state (ETag-cheap when nothing changed)
 //	  render the vendor file
-//	  ATOMIC write into the watched folder (temp + rename — never half a file)
+//	  ATOMIC write into the watched folder (temp + rename - never half a file)
 //	  run the consume command, capture its output   (the Ptisend.bat pattern)
 //	  report applied + heartbeat
 //
@@ -109,7 +109,7 @@ func (s *Syncer) cycle(poll *time.Duration) {
 			v.CodeCount = len(st.Credentials)
 			v.ConsumeCmd = st.Settings.ConsumeCommand
 		})
-		// Server-tuned cadence — unless the site config pins its own
+		// Server-tuned cadence - unless the site config pins its own
 		// (a local override outranks the cloud; it exists for exactly
 		// the cases where a tech needs to slow/speed one machine).
 		if st.Settings.PollSeconds > 0 && s.cfg.PollSeconds == 0 {

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>UnitRise Gate Bridge</title>
 <style>
-  /* Rise design language — mirrors src/brand/unitrise.js in the platform:
+  /* Rise design language - mirrors src/brand/unitrise.js in the platform:
      paper canvas, white cards + hairlines, ink type, amber accent, pills. */
   :root{
     --paper:#FAF8F5; --card:#FFFFFF; --card-soft:#FBFAF8; --line:#E9E5DC;
@@ -59,7 +59,7 @@
       <div class="wordmark">Unit<b>Rise</b> Gate Bridge</div>
       <div style="color:var(--muted);font-size:12px">Syncs gate codes from UnitRise to your gate software</div>
     </div>
-    <div class="sub">agent <span id="ver">—</span><br/><span id="uptime"></span></div>
+    <div class="sub">agent <span id="ver">-</span><br/><span id="uptime"></span></div>
   </header>
 
   <div class="statusband">
@@ -73,19 +73,19 @@
     <div class="card">
       <h2>Facility</h2>
       <dl>
-        <dt>Name</dt><dd id="facName">—</dd>
-        <dt>Provider</dt><dd><span class="chip" id="provider">—</span></dd>
-        <dt>Codes</dt><dd id="codes">—</dd>
-        <dt>Poll every</dt><dd id="poll">—</dd>
+        <dt>Name</dt><dd id="facName">-</dd>
+        <dt>Provider</dt><dd><span class="chip" id="provider">-</span></dd>
+        <dt>Codes</dt><dd id="codes">-</dd>
+        <dt>Poll every</dt><dd id="poll">-</dd>
       </dl>
     </div>
     <div class="card">
       <h2>Gate handoff</h2>
       <dl>
-        <dt>Folder</dt><dd id="savePath">—</dd>
-        <dt>File</dt><dd id="targetFile">—</dd>
-        <dt>Consume</dt><dd id="consume">—</dd>
-        <dt>Last apply</dt><dd id="lastApply">—</dd>
+        <dt>Folder</dt><dd id="savePath">-</dd>
+        <dt>File</dt><dd id="targetFile">-</dd>
+        <dt>Consume</dt><dd id="consume">-</dd>
+        <dt>Last apply</dt><dd id="lastApply">-</dd>
       </dl>
     </div>
   </div>
@@ -107,18 +107,18 @@
       $("ver").textContent = s.agentVersion;
       $("uptime").textContent = "up since " + fmtT(s.startedAt);
       $("facName").textContent = s.facilityName || "(not yet pulled)";
-      $("provider").textContent = s.provider || "—";
+      $("provider").textContent = s.provider || "-";
       $("codes").textContent = s.codeCount;
-      $("poll").textContent = s.pollSeconds ? s.pollSeconds + "s" : "—";
-      $("savePath").textContent = s.savePath || "—";
-      $("targetFile").textContent = s.targetFile || "—";
+      $("poll").textContent = s.pollSeconds ? s.pollSeconds + "s" : "-";
+      $("savePath").textContent = s.savePath || "-";
+      $("targetFile").textContent = s.targetFile || "-";
       $("consume").textContent = s.consumeCmd || "(none)";
       $("lastApply").textContent = fmtT(s.lastApplyAt);
       $("dot").className = "dot" + (s.ok ? "" : " bad");
       $("statusMsg").textContent = s.ok ? "Service is running" : "Attention needed";
       $("statusSub").textContent = s.ok
         ? (s.lastHash ? "in sync · state " + s.lastHash.slice(0, 12) + "…" : "waiting for first sync")
-        : (s.detail || "last cycle failed — see activity");
+        : (s.detail || "last cycle failed - see activity");
       const log = $("log");
       const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
       log.innerHTML = s.log.map((l) => l.startsWith("Error") ? '<span class="err">' + esc(l) + "</span>" : esc(l)).join("\n") || "…";

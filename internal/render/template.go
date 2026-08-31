@@ -1,12 +1,12 @@
-// The template renderer — the universal vendor-format engine.
+// The template renderer - the universal vendor-format engine.
 //
 // Vendor gate-file layouts are per-site artifacts (specs are partner-only
 // paper that drifts between versions), so the layout lives on the SERVER as a
 // template the console can edit; this renderer just interpolates it. A format
-// fix is a console edit picked up on the next poll — the customer's PC is
+// fix is a console edit picked up on the next poll - the customer's PC is
 // never touched.
 //
-// Placeholders (contract §settings.format — lockstep with the server):
+// Placeholders (contract §settings.format - lockstep with the server):
 //
 //	per-credential: {code} {unit} {tenant} {tz} {status}
 //	anywhere:       {facility} {date} {time} {count}
@@ -16,13 +16,13 @@
 //
 // Modes:
 //
-//	full  — the file is the complete roster every write. Suspended codes use
+//	full  - the file is the complete roster every write. Suspended codes use
 //	        suspendedLine, or are simply OMITTED when it's empty (removal is
 //	        the lockout for formats that can't express suspension).
-//	delta — op-coded lines against the last roster this agent applied
+//	delta - op-coded lines against the last roster this agent applied
 //	        (addedLine/changedLine/removedLine, e.g. WinSen's A/E-prefixed
 //	        update.txt). The roster persists in the agent's data dir; a
-//	        bumped server forceNonce — or the local Force button — clears it
+//	        bumped server forceNonce - or the local Force button - clears it
 //	        so everything re-emits as adds.
 package render
 
@@ -52,7 +52,7 @@ var (
 	pending   *rosterFile
 )
 
-// ForceNextFull makes the next template render treat the roster as empty —
+// ForceNextFull makes the next template render treat the roster as empty -
 // the local-dashboard sibling of the server's forceNonce.
 func ForceNextFull() {
 	tmplMu.Lock()
@@ -61,7 +61,7 @@ func ForceNextFull() {
 }
 
 // CommitApplied persists the roster computed by the last Render, and is only
-// called by the syncer AFTER the vendor file landed on disk — a failed write
+// called by the syncer AFTER the vendor file landed on disk - a failed write
 // must not advance the gate's remembered state.
 func CommitApplied() error {
 	tmplMu.Lock()
@@ -122,7 +122,7 @@ func (templateRenderer) FileName() string { return "GATECODES.TXT" }
 func (templateRenderer) Render(st *api.State) ([]byte, error) {
 	spec := st.Settings.Format
 	if spec == nil {
-		return nil, fmt.Errorf("server sent the template renderer without a format — update the gate settings in the console")
+		return nil, fmt.Errorf("server sent the template renderer without a format - update the gate settings in the console")
 	}
 
 	creds := append([]api.Credential(nil), st.Credentials...)
@@ -130,7 +130,7 @@ func (templateRenderer) Render(st *api.State) ([]byte, error) {
 
 	// The "effective" desired set is what the GATE should know. When the
 	// format can't express suspension (no suspendedLine), a suspended code's
-	// expression is absence — so it must also be absent from the roster, or a
+	// expression is absence - so it must also be absent from the roster, or a
 	// later restore would never re-add it.
 	canSuspend := spec.SuspendedLine != ""
 	effective := make([]api.Credential, 0, len(creds))

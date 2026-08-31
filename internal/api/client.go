@@ -1,5 +1,5 @@
 // Package api is the signed HTTP client for the UnitRise gate-bridge API.
-// The contract lives in docs/API_CONTRACT.md — change both together.
+// The contract lives in docs/API_CONTRACT.md - change both together.
 package api
 
 import (
@@ -38,7 +38,7 @@ type Credential struct {
 }
 
 // FormatSpec is the server-editable vendor file template (contract
-// §settings.format). The agent interpolates it — format fixes are console
+// §settings.format). The agent interpolates it - format fixes are console
 // edits that arrive on the next poll, never agent redeploys.
 type FormatSpec struct {
 	Preset        string `json:"preset"`
@@ -120,7 +120,7 @@ func (c *Client) GetState(etag string) (*State, string, error) {
 		}
 		return &st, st.StateHash, nil
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return nil, "", fmt.Errorf("credentials rejected (%d) — re-pair from the UnitRise console", resp.StatusCode)
+		return nil, "", fmt.Errorf("credentials rejected (%d) - re-pair from the UnitRise console", resp.StatusCode)
 	default:
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, "", fmt.Errorf("state fetch failed: %d %s", resp.StatusCode, bytes.TrimSpace(b))

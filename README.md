@@ -1,7 +1,7 @@
 # UnitRise Gate Bridge
 
 The on-site agent that connects UnitRise to legacy gate software. It is
-**deliberately separate from the UnitRise codebase** — it ships to customers'
+**deliberately separate from the UnitRise codebase** - it ships to customers'
 site computers, so its failures, dependencies, and release cadence must never
 entangle with the web platform.
 
@@ -19,7 +19,7 @@ Every ~5 minutes (server-tunable), the agent:
 5. reports applied-state + a heartbeat, which drive the console's
    online/offline banner.
 
-All policy — who has access, suspensions, code generation — lives in the
+All policy - who has access, suspensions, code generation - lives in the
 cloud. The agent is a courier. If it dies, the gate keeps admitting from its
 last imported list (entry degrades gracefully); **suspensions stop
 propagating**, which is why the console alarms on a stale heartbeat.
@@ -50,20 +50,20 @@ Binaries are static; nothing to install on the site machine but the exe.
 ## Site install (operator instructions)
 
 1. In UnitRise: yard → Gate hardware → provider + **Generate bridge
-   credentials** (Access Key / Secret / Facility ID — shown once).
+   credentials** (Access Key / Secret / Facility ID - shown once).
 2. On the gate PC: `unitrise-gate pair` (paste the three values + the folder
    the gate software watches), then `unitrise-gate test`.
 3. `unitrise-gate service install && unitrise-gate service start`
-   (macOS: run with sudo — it writes a LaunchDaemon).
+   (macOS: run with sudo - it writes a LaunchDaemon).
 4. Verify in the console: the Gate hardware card shows the agent online and
    the last applied state.
 
-## Vendor renderers — the iron rule
+## Vendor renderers - the iron rule
 
 A renderer is only written against a **sample export from a live customer
 site** (formats drift between vendor versions; documentation is not
 sufficient). Until then the provider is a named stub that fails with
-instructions. `unitrise_test` is the verification renderer — a human-readable
+instructions. `unitrise_test` is the verification renderer - a human-readable
 file that proves the whole loop with no hardware involved.
 
 Known stubs (observed in the field, awaiting a customer sample): PTI/Falcon,

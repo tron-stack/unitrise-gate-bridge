@@ -1,4 +1,4 @@
-# UnitRise Gate Bridge — API Contract (v1)
+# UnitRise Gate Bridge - API Contract (v1)
 
 _The shared source of truth between this agent and the UnitRise backend
 (truckpark-backend G1 work implements the server side of exactly this).
@@ -9,9 +9,9 @@ Version every breaking change; the agent sends its contract version._
 Minted per facility in the UnitRise console (Gate hardware card → "Generate
 bridge credentials"), revocable there at any time:
 
-- **Access Key** — public identifier (`urgk_` prefix)
-- **Access Secret** — HMAC secret, shown once (`urgs_` prefix)
-- **Facility ID** — the UnitRise facility ObjectId
+- **Access Key** - public identifier (`urgk_` prefix)
+- **Access Secret** - HMAC secret, shown once (`urgs_` prefix)
+- **Facility ID** - the UnitRise facility ObjectId
 
 ## Request signing
 
@@ -34,7 +34,7 @@ rate-limited per key.
 
 Headers: signing headers + optional `If-None-Match: "<stateHash>"`.
 
-- `304` — unchanged (the common case; poll is cheap)
+- `304` - unchanged (the common case; poll is cheap)
 - `200`:
 
 ```json
@@ -75,10 +75,10 @@ Headers: signing headers + optional `If-None-Match: "<stateHash>"`.
 ```
 
 `provider` selects the agent's renderer: `"template"` (the server carries a
-renderable `settings.format`) or `"unitrise_test"` (the verification file —
+renderable `settings.format`) or `"unitrise_test"` (the verification file -
 file_bridge's default until a format is configured).
 
-### `settings.format` — the server-driven vendor template
+### `settings.format` - the server-driven vendor template
 
 Vendor gate-file layouts are per-site artifacts (specs are partner-only paper
 that drifts between versions), so the layout is DATA the console edits, not
@@ -97,10 +97,10 @@ Placeholders, usable in every template string:
 
 Modes:
 
-- **`full`** — the file is the complete roster each write. Suspended codes
+- **`full`** - the file is the complete roster each write. Suspended codes
   render via `suspendedLine`; when it's blank they are OMITTED (removal is the
   lockout for formats that can't express suspension).
-- **`delta`** — op-coded change lines against the roster this agent last
+- **`delta`** - op-coded change lines against the roster this agent last
   applied (`addedLine`/`changedLine`/`removedLine`, e.g. WinSen's A/E-prefixed
   update.txt). The roster persists at `<config dir>/last-roster.json` and is
   committed only after the vendor file lands on disk. A suspension that the
@@ -108,7 +108,7 @@ Modes:
   code leaves the roster so a later restore re-emits as an add. A blank
   `removedLine` means removals are inexpressible and are skipped.
 
-Every line — including the last — ends with the configured line ending
+Every line - including the last - ends with the configured line ending
 (`crlf` default; DOS-lineage importers require the trailing carriage return).
 
 **Force semantics:** the state carries `forceNonce`. When it differs from the
@@ -128,7 +128,7 @@ settings, so any change (issue, suspend, restore, revoke, rename, settings
 edit) changes the hash and wakes the agent's next poll.
 
 Poll cadence: the server's `settings.pollSeconds` (console-tunable, 60–3600,
-default 300) sets the agent's cycle — unless the agent's LOCAL config pins its
+default 300) sets the agent's cycle - unless the agent's LOCAL config pins its
 own `pollSeconds`, which outranks the server (site-specific override for
 support techs). Worst-case suspension latency = one poll interval.
 
@@ -152,19 +152,19 @@ Audit trail: the console shows "last applied" + consume output per facility.
 Stable installer URLs for the setup email/console: platforms
 `windows-amd64` · `darwin-arm64` · `darwin-amd64` · `linux-amd64`. 302s to the
 deploy-configured hosting (`GATE_BRIDGE_DOWNLOAD_BASE`); 404 with a friendly
-message until binaries are published. Mounted ABOVE the signing middleware —
+message until binaries are published. Mounted ABOVE the signing middleware -
 an IT person clicks this before any credentials exist.
 
 ### `GET /api/gate-bridge/v1/update-check` (stub in v1)
 
-`{ "latestVersion": "1.0.0", "downloadUrl": null }` — reserved for
+`{ "latestVersion": "1.0.0", "downloadUrl": null }` - reserved for
 storEDGE-style auto-update; the agent only reports availability in v1,
 it does not self-replace.
 
 ## Failure semantics (both sides must honor)
 
 - Agent can't reach the API → keep the last written file untouched; the gate
-  keeps admitting from its last list (entry degrades gracefully) — but
+  keeps admitting from its last list (entry degrades gracefully) - but
   **suspensions stop propagating**, which is why heartbeat visibility is part
   of the minimum product, not polish.
 - Server sees no heartbeat for N hours (default 4) → red console banner +

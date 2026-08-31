@@ -1,4 +1,4 @@
-// The verification renderer — UnitRise's equivalent of the "storEDGE Test"
+// The verification renderer - UnitRise's equivalent of the "storEDGE Test"
 // provider. It writes a human-readable file so an installer can prove the
 // whole loop (cloud → agent → folder → consume command) end to end BEFORE any
 // real gate hardware is in the picture.
@@ -20,7 +20,7 @@ func (testFile) FileName() string { return "UNITRISE-GATE-TEST.txt" }
 
 func (testFile) Render(st *api.State) ([]byte, error) {
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "UnitRise Gate Bridge — TEST OUTPUT (not a real vendor format)\n")
+	fmt.Fprintf(&b, "UnitRise Gate Bridge - TEST OUTPUT (not a real vendor format)\n")
 	fmt.Fprintf(&b, "Facility: %s\n", st.Facility.Name)
 	fmt.Fprintf(&b, "Generated: %s\n", time.Now().Format(time.RFC3339))
 	fmt.Fprintf(&b, "State hash: %s\n", st.StateHash)

@@ -1,5 +1,5 @@
 // Package logging: console + rotating-ish file log (the agent runs for years
-// unattended on a site PC — the log must never eat the disk).
+// unattended on a site PC - the log must never eat the disk).
 package logging
 
 import (

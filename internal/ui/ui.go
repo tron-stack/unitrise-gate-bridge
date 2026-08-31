@@ -1,4 +1,4 @@
-// Package ui serves the agent's local dashboard — the UnitRise-styled
+// Package ui serves the agent's local dashboard - the UnitRise-styled
 // equivalent of the storEDGE Gate window. Bound to 127.0.0.1 ONLY: it's a
 // status window, not a remote admin surface. It exposes no secrets and its
 // single action (force full update) is harmless-by-design.
@@ -21,7 +21,7 @@ const DefaultPort = 47810
 
 // Serve starts the dashboard listener. onForce is the syncer's
 // ForceFullUpdate. Returns the bound address (port may have been bumped if the
-// default was taken — e.g. a second agent on one machine).
+// default was taken - e.g. a second agent on one machine).
 func Serve(port int, onForce func()) (string, error) {
 	if port == 0 {
 		port = DefaultPort
@@ -60,6 +60,6 @@ func Serve(port int, onForce func()) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("dashboard listen: %w", err)
 	}
-	go http.Serve(ln, mux) //nolint:errcheck — lives for the process lifetime
+	go http.Serve(ln, mux) //nolint:errcheck - lives for the process lifetime
 	return "http://" + ln.Addr().String(), nil
 }

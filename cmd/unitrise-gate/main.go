@@ -1,10 +1,10 @@
-// unitrise-gate — the UnitRise Gate Bridge agent.
+// unitrise-gate - the UnitRise Gate Bridge agent.
 //
 // A deliberately small courier (the storEDGE Gate shape, proven for a decade):
 // it pulls the facility's full gate-code list from UnitRise, writes the
 // vendor-format file into the folder the on-site gate software watches, runs
-// the vendor's consume command, and heartbeats. All policy — who gets access,
-// suspensions, code generation — lives in the cloud; this binary is dumb on
+// the vendor's consume command, and heartbeats. All policy - who gets access,
+// suspensions, code generation - lives in the cloud; this binary is dumb on
 // purpose.
 //
 //	unitrise-gate pair        interactive setup (key / secret / facility / paths)
@@ -78,7 +78,7 @@ func newLogger(c *config.Config) (*logging.Logger, error) {
 func run(forceOnce bool) error {
 	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("no config (%v) — run `unitrise-gate pair` first", err)
+		return fmt.Errorf("no config (%v) - run `unitrise-gate pair` first", err)
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -92,7 +92,7 @@ func run(forceOnce bool) error {
 	logging.Hook = status.AppendLog
 
 	s := syncer.New(cfg, log)
-	// Local dashboard (127.0.0.1) — the UnitRise-styled status window.
+	// Local dashboard (127.0.0.1) - the UnitRise-styled status window.
 	if cfg.UIPort >= 0 {
 		if addr, uerr := ui.Serve(cfg.UIPort, s.ForceFullUpdate); uerr != nil {
 			log.Errorf("dashboard: %v", uerr)
@@ -102,7 +102,7 @@ func run(forceOnce bool) error {
 	}
 	loop := func(ctx context.Context) {
 		if forceOnce {
-			// One forced cycle, then leave — used by installers and support.
+			// One forced cycle, then leave - used by installers and support.
 			s.ForceFullUpdate()
 			cctx, cancel := context.WithCancel(ctx)
 			go func() { s.Run(cctx) }()
@@ -124,7 +124,7 @@ func run(forceOnce bool) error {
 		one, cancel := context.WithCancel(ctx)
 		go func() { s.Run(one) }()
 		// Give the forced cycle a moment to complete, then exit.
-		waitForEnter("Force update dispatched — press Enter after the log shows it applied…")
+		waitForEnter("Force update dispatched - press Enter after the log shows it applied…")
 		cancel()
 		return nil
 	}
@@ -174,7 +174,7 @@ func pair() error {
 		}
 		return t
 	}
-	fmt.Println("UnitRise Gate Bridge pairing — values come from the console's Gate hardware card.")
+	fmt.Println("UnitRise Gate Bridge pairing - values come from the console's Gate hardware card.")
 	cfg.AccessKey = ask("API Access Key", cfg.AccessKey)
 	cfg.AccessSecret = ask("API Access Secret", cfg.AccessSecret)
 	cfg.FacilityID = ask("API Facility ID", cfg.FacilityID)
@@ -205,7 +205,7 @@ func test() error {
 	if err != nil {
 		return fmt.Errorf("API check failed: %w", err)
 	}
-	fmt.Printf("✓ API ok — facility %q, provider %q, %d code(s)\n", st.Facility.Name, st.Provider, len(st.Credentials))
+	fmt.Printf("✓ API ok - facility %q, provider %q, %d code(s)\n", st.Facility.Name, st.Provider, len(st.Credentials))
 	probe := filepath.Join(cfg.SavePath, "unitrise-bridge-probe.tmp")
 	if err := os.MkdirAll(cfg.SavePath, 0o755); err != nil {
 		return fmt.Errorf("save path: %w", err)
@@ -215,7 +215,7 @@ func test() error {
 	}
 	os.Remove(probe)
 	fmt.Printf("✓ save path writable (%s)\n", cfg.SavePath)
-	fmt.Println("all good — install the service: unitrise-gate service install")
+	fmt.Println("all good - install the service: unitrise-gate service install")
 	return nil
 }
 

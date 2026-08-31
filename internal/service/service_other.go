@@ -1,6 +1,6 @@
 //go:build !windows
 
-// Non-Windows: no SCM. macOS installs use launchd — `service install` writes
+// Non-Windows: no SCM. macOS installs use launchd - `service install` writes
 // a LaunchDaemon plist (matching storEDGE's new Mac-compatible installer).
 package service
 
@@ -16,7 +16,7 @@ const Name = "com.unitrise.gatebridge"
 func IsWindowsService() bool { return false }
 
 func RunAsService(run func(ctx context.Context)) error {
-	return fmt.Errorf("not a Windows service context — use `run`")
+	return fmt.Errorf("not a Windows service context - use `run`")
 }
 
 const plistPath = "/Library/LaunchDaemons/" + Name + ".plist"

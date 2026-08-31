@@ -1,6 +1,6 @@
 // Package status is the shared, thread-safe view the local dashboard reads:
 // current sync state + a ring buffer of recent log lines. The agent stays a
-// single static binary — the UI is a localhost page served from memory.
+// single static binary - the UI is a localhost page served from memory.
 package status
 
 import (

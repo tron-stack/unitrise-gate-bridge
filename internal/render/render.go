@@ -4,8 +4,8 @@
 // THE RULE (from docs/GATE_INTEGRATION_PLAN.md, and it is absolute): a real
 // vendor renderer is only written against a SAMPLE FILE from a live customer
 // site. Vendor formats drift between versions and cannot be validated from
-// documentation. Until then the registry holds exactly one renderer — the
-// verification renderer — plus named stubs that fail loudly with instructions.
+// documentation. Until then the registry holds exactly one renderer - the
+// verification renderer - plus named stubs that fail loudly with instructions.
 package render
 
 import (
@@ -34,7 +34,7 @@ func Get(name string) (Renderer, error) {
 	}
 	if _, stub := stubs[name]; stub {
 		return nil, fmt.Errorf(
-			"provider %q is recognized but its file renderer isn't built yet — it requires a sample export from a live %s site (see internal/render/README.md)",
+			"provider %q is recognized but its file renderer isn't built yet - it requires a sample export from a live %s site (see internal/render/README.md)",
 			name, name)
 	}
 	return nil, fmt.Errorf("unknown gate provider %q (known: %s)", name, strings.Join(Known(), ", "))

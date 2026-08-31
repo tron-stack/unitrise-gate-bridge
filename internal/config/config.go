@@ -19,7 +19,7 @@ import (
 )
 
 type Config struct {
-	// Pairing (three-part, storEDGE-familiar — minted in the UnitRise console).
+	// Pairing (three-part, storEDGE-familiar - minted in the UnitRise console).
 	AccessKey    string `json:"accessKey"`
 	AccessSecret string `json:"accessSecret"`
 	FacilityID   string `json:"facilityId"`
@@ -120,7 +120,7 @@ func (c *Config) Validate() error {
 		missing = append(missing, "savePath")
 	}
 	if len(missing) > 0 {
-		return errors.New("config missing: " + strings.Join(missing, ", ") + " — run `unitrise-gate pair`")
+		return errors.New("config missing: " + strings.Join(missing, ", ") + " - run `unitrise-gate pair`")
 	}
 	return nil
 }
