@@ -14,6 +14,7 @@
 package update
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/api"
 )
@@ -74,6 +76,32 @@ func CheckOnly(client *api.Client) (*api.UpdateInfo, bool, error) {
 	return info, IsNewer(api.AgentVersion, info.LatestVersion), nil
 }
 
+// Watch logs when a newer agent is published. Context-tied (stops with the
+// service), retries hourly until the first successful check so a boot-time
+// network blip doesn't leave a 24-hour blind window, then settles to daily.
+// LOG-ONLY by design - the binary swap is always a person running
+// `unitrise-gate update`.
+func Watch(ctx context.Context, client *api.Client, logf func(string, ...any)) {
+	interval := time.Hour
+	timer := time.NewTimer(30 * time.Second) // first check shortly after boot
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		info, newer, err := CheckOnly(client)
+		if err == nil {
+			interval = 24 * time.Hour
+			if newer {
+				logf("agent %s is available (running %s) - run `unitrise-gate update` on this PC to take it", info.LatestVersion, api.AgentVersion)
+			}
+		}
+		timer.Reset(interval)
+	}
+}
+
 // expectedSum finds the hex digest for fileName inside a SHA256SUMS body
 // (`<hex>  <name>` per line, the shasum/sha256sum format).
 func expectedSum(sums []byte, fileName string) string {
@@ -108,24 +136,25 @@ func SelfUpdate(client *api.Client) (string, error) {
 		return "", fmt.Errorf("downloaded file is suspiciously small (%d bytes) - aborting", len(bin))
 	}
 
-	// Integrity: when SHA256SUMS is published (make release writes it), a
-	// mismatch is a hard stop. If the sums file itself is missing we say so
-	// and continue - the transport is TLS either way.
+	// Integrity: when the server advertises a SHA256SUMS (make release writes
+	// it), verification is MANDATORY - an unreachable sums file aborts rather
+	// than quietly downgrading to TLS-only, because "the checksum step
+	// silently didn't happen" is exactly what a tampered mirror looks like.
 	if info.Sha256URL != "" {
 		fileName := filepath.Base(info.DownloadURL)
-		if sums, err := client.Download(info.Sha256URL); err == nil {
-			want := expectedSum(sums, fileName)
-			if want == "" {
-				return "", fmt.Errorf("SHA256SUMS is published but has no entry for %s - aborting", fileName)
-			}
-			got := sha256.Sum256(bin)
-			if hex.EncodeToString(got[:]) != want {
-				return "", fmt.Errorf("checksum mismatch for %s - aborting (corrupt download or tampering)", fileName)
-			}
-			fmt.Println("checksum verified.")
-		} else {
-			fmt.Println("note: SHA256SUMS not reachable - proceeding on TLS alone.")
+		sums, err := client.Download(info.Sha256URL)
+		if err != nil {
+			return "", fmt.Errorf("SHA256SUMS is published but unreachable (%v) - aborting; retry in a minute", err)
 		}
+		want := expectedSum(sums, fileName)
+		if want == "" {
+			return "", fmt.Errorf("SHA256SUMS is published but has no entry for %s - aborting", fileName)
+		}
+		got := sha256.Sum256(bin)
+		if hex.EncodeToString(got[:]) != want {
+			return "", fmt.Errorf("checksum mismatch for %s - aborting (corrupt download or tampering)", fileName)
+		}
+		fmt.Println("checksum verified.")
 	}
 
 	exe, err := os.Executable()

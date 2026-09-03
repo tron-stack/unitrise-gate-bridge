@@ -2,9 +2,11 @@
 //
 // Location (per-OS, machine-scoped so the Windows service and the interactive
 // UI read the same file):
-//   Windows: %ProgramData%\UnitRiseGateBridge\config.json
-//   macOS:   /Library/Application Support/UnitRiseGateBridge/config.json
-//   other:   /etc/unitrise-gate-bridge/config.json
+//
+//	Windows: %ProgramData%\UnitRiseGateBridge\config.json
+//	macOS:   /Library/Application Support/UnitRiseGateBridge/config.json
+//	other:   /etc/unitrise-gate-bridge/config.json
+//
 // Override with UNITRISE_GATE_CONFIG for tests/dev.
 package config
 
@@ -90,8 +92,15 @@ func Load() (*Config, error) {
 }
 
 func (c *Config) Save() error {
-	if err := os.MkdirAll(Dir(), 0o755); err != nil {
+	if err := os.MkdirAll(Dir(), 0o700); err != nil {
 		return err
+	}
+	// The access secret lives in this directory. On Windows, Go file modes are
+	// ignored and %ProgramData% ACLs default to world-readable - lock the
+	// directory to SYSTEM + Administrators (no-op elsewhere). Best-effort: a
+	// pairing must not fail because ACL surgery did, but say so.
+	if err := secureDir(Dir()); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: couldn't restrict %s permissions: %v\n", Dir(), err)
 	}
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
@@ -122,5 +131,27 @@ func (c *Config) Validate() error {
 	if len(missing) > 0 {
 		return errors.New("config missing: " + strings.Join(missing, ", ") + " - run `unitrise-gate pair`")
 	}
+	// The HMAC headers ride every request; over plain HTTP they'd cross the
+	// wire replayable-in-the-clear. Loopback stays allowed for local testing.
+	if ep := c.APIEndpoint; ep != "" && !strings.HasPrefix(ep, "https://") && !isLoopbackEndpoint(ep) {
+		return fmt.Errorf("apiEndpoint must use https:// (got %s) - plain http is only allowed for 127.0.0.1/localhost testing", ep)
+	}
 	return nil
+}
+
+func isLoopbackEndpoint(ep string) bool {
+	rest := strings.TrimPrefix(ep, "http://")
+	if rest == ep {
+		return false // not http:// at all (some other scheme) - let it fail above
+	}
+	host := rest
+	if strings.HasPrefix(host, "[") {
+		// Bracketed IPv6 literal: the host ends at "]", not at the port colon.
+		if i := strings.Index(host, "]"); i >= 0 {
+			host = host[:i+1]
+		}
+	} else if i := strings.IndexAny(host, ":/"); i >= 0 {
+		host = host[:i]
+	}
+	return host == "localhost" || host == "127.0.0.1" || strings.HasPrefix(host, "127.") || host == "[::1]" || host == "::1"
 }

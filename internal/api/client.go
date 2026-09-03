@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/config"
@@ -69,8 +70,8 @@ type State struct {
 		Address string `json:"address"`
 		Phone   string `json:"phone"`
 	} `json:"facility"`
-	Provider    string        `json:"provider"`
-	Settings    StateSettings `json:"settings"`
+	Provider string        `json:"provider"`
+	Settings StateSettings `json:"settings"`
 	// Delta renderers key "force full update" off this: a changed nonce means
 	// re-emit the whole roster as adds, not an empty diff.
 	ForceNonce  int          `json:"forceNonce"`
@@ -78,7 +79,8 @@ type State struct {
 }
 
 // sign produces the headers per the contract:
-//   hmacSHA256(secret, "METHOD\nPATH\nTIMESTAMP\nsha256hex(body)")
+//
+//	hmacSHA256(secret, "METHOD\nPATH\nTIMESTAMP\nsha256hex(body)")
 func (c *Client) sign(req *http.Request, path string, body []byte) {
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
 	bodyHash := sha256.Sum256(body)
@@ -120,11 +122,33 @@ func (c *Client) GetState(etag string) (*State, string, error) {
 		}
 		return &st, st.StateHash, nil
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return nil, "", fmt.Errorf("credentials rejected (%d) - re-pair from the UnitRise console", resp.StatusCode)
+		return nil, "", authError(resp)
 	default:
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, "", fmt.Errorf("state fetch failed: %d %s", resp.StatusCode, bytes.TrimSpace(b))
 	}
+}
+
+// authError turns a 401/403 into the RIGHT instruction. The single most
+// common field failure is a gate PC whose clock has drifted past the server's
+// 5-minute signature window - telling that operator to "re-pair" sends them
+// on a wild goose chase, so the skew case gets its own diagnosis (from the
+// server's stated reason, cross-checked against its Date header).
+func authError(resp *http.Response) error {
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	body := string(bytes.ToLower(bytes.TrimSpace(b)))
+	skewHint := strings.Contains(body, "skew") || strings.Contains(body, "timestamp")
+	if !skewHint {
+		if srv, err := http.ParseTime(resp.Header.Get("Date")); err == nil {
+			if d := time.Since(srv); d > 5*time.Minute || d < -5*time.Minute {
+				skewHint = true
+			}
+		}
+	}
+	if skewHint {
+		return fmt.Errorf("this PC's clock is off by more than 5 minutes, so the server rejects our signed requests (%d). Fix Windows time sync (Settings → Time & language → Date & time → \"Sync now\"), then the agent recovers on its own", resp.StatusCode)
+	}
+	return fmt.Errorf("credentials rejected (%d) - re-pair from the UnitRise console (Gate hardware card → Generate bridge credentials)", resp.StatusCode)
 }
 
 func (c *Client) postJSON(path string, payload any) error {

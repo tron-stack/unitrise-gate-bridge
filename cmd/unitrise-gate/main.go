@@ -11,9 +11,10 @@
 //	unitrise-gate test        verify credentials + write a probe file
 //	unitrise-gate run         foreground loop (also the service entrypoint)
 //	unitrise-gate force       one full update now, then exit
+//	unitrise-gate ui          open the local dashboard in a browser
 //	unitrise-gate update      download + swap in the latest published agent
 //	unitrise-gate service …   install | uninstall | start | stop
-//	unitrise-gate version
+//	unitrise-gate help | version
 package main
 
 import (
@@ -27,10 +28,10 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/api"
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/config"
+	"github.com/mytruckyards/unitrise-gate-bridge/internal/lock"
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/logging"
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/service"
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/status"
@@ -38,6 +39,37 @@ import (
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/ui"
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/update"
 )
+
+// check is the success marker: "✓" where terminals render it, plain "OK" on
+// Windows (legacy conhost code pages turn the checkmark into mojibake, and
+// `unitrise-gate test`'s output is the first thing a site installer reads).
+func check() string {
+	if runtime.GOOS == "windows" {
+		return "OK"
+	}
+	return "✓"
+}
+
+func usage(w *os.File) {
+	fmt.Fprintf(w, `UnitRise Gate Bridge %s - syncs gate codes from UnitRise to your gate software
+
+Usage: unitrise-gate <command>
+
+Setup (in order, on the gate computer):
+  pair       enter the credentials from the console's Gate hardware card
+  test       verify the credentials and prove the save folder is writable
+  service    install | uninstall | start | stop   (Windows service / launchd)
+
+Day to day:
+  run        run in the foreground (the service runs this for you)
+  ui         open the local dashboard (http://127.0.0.1:%d)
+  force      push one full update right now, then exit
+  update     download and install the latest published agent
+  version    print the agent version
+
+Docs & help: https://unitrise.com/help
+`, api.AgentVersion, ui.DefaultPort)
+}
 
 func main() {
 	cmd := "run"
@@ -60,10 +92,13 @@ func main() {
 		err = openUI()
 	case "update":
 		err = updateCmd()
+	case "help", "-h", "--help":
+		usage(os.Stdout)
 	case "version", "--version", "-v":
-		fmt.Printf("unitrise-gate %s (contract %s)\n", api.AgentVersion, api.ContractVersion)
+		fmt.Printf("unitrise-gate %s (contract %s, %s/%s)\n", api.AgentVersion, api.ContractVersion, runtime.GOOS, runtime.GOARCH)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: unitrise-gate [pair|test|run|force|ui|update|service|version]\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
+		usage(os.Stderr)
 		os.Exit(2)
 	}
 	if err != nil {
@@ -88,6 +123,14 @@ func run(forceOnce bool) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	// ONE agent per machine, ever: a second copy (the service already running,
+	// plus a tech's console `run`) would double-write the vendor file and
+	// corrupt delta rosters. `force` counts too - it runs a real cycle.
+	release, err := lock.Acquire()
+	if err != nil {
+		return err
+	}
+	defer release()
 	log, err := newLogger(cfg)
 	if err != nil {
 		return err
@@ -105,19 +148,12 @@ func run(forceOnce bool) error {
 			log.Infof("dashboard at %s", addr)
 		}
 	}
-	// Once at startup and daily after: log when a newer agent is published.
-	// LOG-ONLY - the swap is always a person running `unitrise-gate update`
-	// (the console shows the same "update available" chip from heartbeats).
-	go func() {
-		client := api.New(cfg)
-		for {
-			if info, newer, err := update.CheckOnly(client); err == nil && newer {
-				log.Infof("agent %s is available (running %s) - run `unitrise-gate update` on this PC to take it", info.LatestVersion, api.AgentVersion)
-			}
-			time.Sleep(24 * time.Hour)
-		}
-	}()
 	loop := func(ctx context.Context) {
+		// Log when a newer agent is published (ctx-tied; retries hourly until
+		// the first successful check, then daily). LOG-ONLY - the swap is
+		// always a person running `unitrise-gate update` (the console shows
+		// the same "update available" chip from heartbeats).
+		go update.Watch(ctx, api.New(cfg), log.Infof)
 		if forceOnce {
 			// One forced cycle, then leave - used by installers and support.
 			s.ForceFullUpdate()
@@ -216,13 +252,19 @@ func pair() error {
 	cfg.FacilityID = ask("API Facility ID", cfg.FacilityID)
 	cfg.SavePath = ask("Gate provider save path (folder the gate software watches)", cfg.SavePath)
 	cfg.APIEndpoint = ask("API endpoint", cfg.APIEndpoint)
+	// A bare hostname gets the scheme it should have; a plain-http endpoint to
+	// anywhere but loopback is refused by Validate below (the HMAC headers
+	// must never cross the wire in the clear).
+	if cfg.APIEndpoint != "" && !strings.Contains(cfg.APIEndpoint, "://") {
+		cfg.APIEndpoint = "https://" + cfg.APIEndpoint
+	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
 	if err := cfg.Save(); err != nil {
 		return err
 	}
-	fmt.Printf("saved %s\nnext: unitrise-gate test\n", config.Path())
+	fmt.Printf("%s saved %s\nnext: unitrise-gate test\n", check(), config.Path())
 	return nil
 }
 
@@ -241,7 +283,7 @@ func test() error {
 	if err != nil {
 		return fmt.Errorf("API check failed: %w", err)
 	}
-	fmt.Printf("✓ API ok - facility %q, provider %q, %d code(s)\n", st.Facility.Name, st.Provider, len(st.Credentials))
+	fmt.Printf("%s API ok - facility %q, provider %q, %d code(s)\n", check(), st.Facility.Name, st.Provider, len(st.Credentials))
 	probe := filepath.Join(cfg.SavePath, "unitrise-bridge-probe.tmp")
 	if err := os.MkdirAll(cfg.SavePath, 0o755); err != nil {
 		return fmt.Errorf("save path: %w", err)
@@ -250,7 +292,7 @@ func test() error {
 		return fmt.Errorf("cannot write into %s: %w", cfg.SavePath, err)
 	}
 	os.Remove(probe)
-	fmt.Printf("✓ save path writable (%s)\n", cfg.SavePath)
+	fmt.Printf("%s save path writable (%s)\n", check(), cfg.SavePath)
 	fmt.Println("all good - install the service: unitrise-gate service install")
 	return nil
 }

@@ -46,7 +46,12 @@ func (l *Logger) write(level, format string, args ...any) {
 		if st, err := l.f.Stat(); err == nil && st.Size() > maxLogBytes {
 			l.f.Close()
 			os.Rename(l.path, l.path+".old") // best-effort single rotation
-			l.f, _ = os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+			f, oerr := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+			if oerr != nil {
+				// Say so ONCE on stdout rather than silently going file-less.
+				fmt.Fprintf(os.Stdout, "log rotation: couldn't reopen %s: %v (logging to stdout only)\n", l.path, oerr)
+			}
+			l.f = f // nil on failure - write() guards on it
 		}
 	}
 }

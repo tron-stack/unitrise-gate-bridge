@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
@@ -77,6 +78,19 @@ func Install() error {
 		StartType:        mgr.StartAutomatic,
 		DelayedAutoStart: true,
 	}, "run")
+	if err == nil {
+		// Recovery actions: nobody watches a gate PC, so a crashed agent must
+		// restart itself (5s, 30s, then every 60s; counter resets daily). The
+		// suspensions-not-propagating alarm still fires from missed
+		// heartbeats, but self-healing beats alarming.
+		if rerr := s.SetRecoveryActions([]mgr.RecoveryAction{
+			{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
+			{Type: mgr.ServiceRestart, Delay: 30 * time.Second},
+			{Type: mgr.ServiceRestart, Delay: 60 * time.Second},
+		}, 86400); rerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: couldn't set service recovery actions: %v\n", rerr)
+		}
+	}
 	if err != nil {
 		return err
 	}

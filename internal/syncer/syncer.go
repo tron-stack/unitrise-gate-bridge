@@ -72,6 +72,7 @@ func (s *Syncer) Run(ctx context.Context) {
 	})
 	timer := time.NewTimer(1 * time.Second) // first cycle almost immediately
 	defer timer.Stop()
+	failures := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -79,19 +80,57 @@ func (s *Syncer) Run(ctx context.Context) {
 			return
 		case <-s.force:
 			s.lastHash = "" // drop the ETag so the next fetch is a full 200
-			s.cycle(&poll)
+			s.safeCycle(&poll, &failures)
 		case <-timer.C:
-			s.cycle(&poll)
+			s.safeCycle(&poll, &failures)
+		}
+		// A failed cycle retries on a short backoff instead of waiting out the
+		// whole poll interval - a network blip at a site polling every 30 min
+		// must not cost 30 minutes of stale gate codes. 30s → 1m → 2m → 4m,
+		// capped by the poll itself, with ±20% jitter so a fleet that lost the
+		// same uplink doesn't stampede back in lockstep.
+		next := poll
+		if failures > 0 {
+			backoff := 30 * time.Second << uint(min(failures-1, 3))
+			if backoff < poll {
+				next = backoff
+			}
+			next = jitter(next)
 		}
 		status.Update(func(st *status.Snapshot) {
 			st.PollSeconds = int(poll / time.Second)
-			st.NextPollAt = time.Now().Add(poll)
+			st.NextPollAt = time.Now().Add(next)
 		})
-		timer.Reset(poll)
+		timer.Reset(next)
 	}
 }
 
-func (s *Syncer) cycle(poll *time.Duration) {
+func jitter(d time.Duration) time.Duration {
+	// ±20%, cheap deterministic-enough source (no need for crypto here).
+	f := 0.8 + 0.4*float64(time.Now().UnixNano()%1000)/1000.0
+	return time.Duration(float64(d) * f)
+}
+
+// safeCycle guards the loop against a panic anywhere in render/apply/consume:
+// the service must degrade to "cycle failed, will retry" - never die silently
+// on a site PC nobody is watching.
+func (s *Syncer) safeCycle(poll *time.Duration, failures *int) {
+	defer func() {
+		if r := recover(); r != nil {
+			*failures++
+			detail := fmt.Sprintf("internal error: %v", r)
+			s.log.Errorf("%s", detail)
+			status.Update(func(v *status.Snapshot) { v.OK = false; v.Detail = detail })
+		}
+	}()
+	if s.cycle(poll) {
+		*failures = 0
+	} else {
+		*failures++
+	}
+}
+
+func (s *Syncer) cycle(poll *time.Duration) bool {
 	ok, detail := true, ""
 	st, hash, err := s.client.GetState(s.lastHash)
 	switch {
@@ -141,6 +180,7 @@ func (s *Syncer) cycle(poll *time.Duration) {
 	if err := s.client.SendHeartbeat(hb); err != nil {
 		s.log.Errorf("heartbeat: %v", err)
 	}
+	return ok
 }
 
 func (s *Syncer) apply(st *api.State) error {
@@ -212,12 +252,10 @@ func (s *Syncer) consume(st *api.State) (int, string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/C", full)
-	} else {
-		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", full)
-	}
+	// shellCommand is per-OS: cmd.exe needs explicit quoting when the resolved
+	// path has spaces (C:\Program Files\PTI\Ptisend.bat) - exec's default
+	// Windows escaping through `cmd /C` mangles it.
+	cmd := shellCommand(ctx, full)
 	cmd.Dir = s.cfg.SavePath
 	outB, err := cmd.CombinedOutput()
 	out := strings.TrimSpace(string(outB))
