@@ -1,0 +1,28 @@
+# CI: every push/PR proves the agent vets, tests, and cross-compiles for
+# every platform it ships to - so a broken Windows build can't hide behind a
+# green mac build.
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: Vet + tests
+        run: make test
+      - name: Cross-compile every shipping target
+        run: |
+          GOOS=windows GOARCH=amd64 go build ./...
+          GOOS=darwin  GOARCH=arm64 go build ./...
+          GOOS=darwin  GOARCH=amd64 go build ./...
+          GOOS=linux   GOARCH=amd64 go build ./...

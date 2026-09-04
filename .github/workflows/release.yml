@@ -1,0 +1,43 @@
+# Release: push a tag like v0.4.0 and this builds every platform, runs the
+# tests, and publishes a GitHub Release whose asset URLs match EXACTLY what
+# the backend serves (unitrise-gate-<platform>[.exe] + SHA256SUMS + the
+# Windows install scripts).
+#
+# After the release is live, point the backend at it (Render env):
+#   GATE_BRIDGE_DOWNLOAD_BASE=https://github.com/tron-stack/unitrise-gate-bridge/releases/latest/download
+#   GATE_AGENT_LATEST_VERSION=<the version you tagged, no leading v>
+# The "latest/download" base never changes between releases - only the
+# version env moves per release.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the release + upload assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet + tests
+        run: make test
+
+      - name: Build all platforms (version = tag without the v)
+        run: make release VERSION="${GITHUB_REF_NAME#v}"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "UnitRise Gate Bridge $GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag

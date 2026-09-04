@@ -19,13 +19,22 @@ winres:
 		-file-version=$(VERSION) -product-version=$(VERSION) -64 \
 		-o cmd/unitrise-gate/resource_windows_amd64.syso versioninfo.json
 
-# Release checklist:
-#   1. make release VERSION=x.y.z         (builds all platforms + SHA256SUMS)
-#   2. make sign                          (optional; needs the env vars below)
-#   3. upload dist/* to the hosting bucket/release
-#   4. set GATE_AGENT_LATEST_VERSION=x.y.z (+ GATE_BRIDGE_DOWNLOAD_BASE) on the
-#      backend - update-check, the console chip, and `unitrise-gate update`
-#      all key off those two env vars.
+# Release checklist (the normal path is CI - .github/workflows/release.yml):
+#   1. git tag v<x.y.z> && git push origin v<x.y.z>
+#      → CI runs make test + make release and publishes the GitHub Release
+#        with dist/* attached (asset names match the backend's platform map).
+#   2. On the backend (Render env):
+#        GATE_BRIDGE_DOWNLOAD_BASE=https://github.com/tron-stack/unitrise-gate-bridge/releases/latest/download
+#        GATE_AGENT_LATEST_VERSION=x.y.z     (no leading v)
+#      The base never changes between releases; only the version env moves.
+#      update-check, the console's update chip, the download links, and
+#      `unitrise-gate update` all key off those two env vars.
+#   3. Signing (optional, local): make sign, then re-upload the signed
+#      artifacts to the release (signing changes the bytes AND the sums).
+# NOTE: GitHub release assets are only anonymously downloadable when the repo
+# is PUBLIC. Private repo = host dist/* on a public bucket instead and point
+# GATE_BRIDGE_DOWNLOAD_BASE there.
+# Manual fallback: make release VERSION=x.y.z && upload dist/* yourself.
 release: clean winres
 	GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/unitrise-gate-windows-amd64.exe ./cmd/unitrise-gate
 	cp scripts/install.ps1 scripts/uninstall.ps1 dist/
