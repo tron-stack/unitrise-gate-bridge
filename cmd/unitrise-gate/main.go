@@ -157,17 +157,19 @@ func pairFromDashboard(req ui.PairRequest, log *logging.Logger) (ui.PairResult, 
 	if p := strings.TrimSpace(req.SavePath); p != "" {
 		c.SavePath = p
 	}
-	if e := strings.TrimSpace(req.APIEndpoint); e != "" {
+	if e := config.NormalizeEndpoint(req.APIEndpoint); e != "" {
 		c.APIEndpoint = e
-	}
-	if c.APIEndpoint != "" && !strings.Contains(c.APIEndpoint, "://") {
-		c.APIEndpoint = "https://" + c.APIEndpoint
+	} else {
+		c.APIEndpoint = config.NormalizeEndpoint(c.APIEndpoint)
 	}
 	if err := c.Validate(); err != nil {
 		return ui.PairResult{}, nil, err
 	}
 	st, _, err := api.New(c).GetState("")
 	if err != nil {
+		if strings.Contains(err.Error(), "no such host") {
+			return ui.PairResult{}, nil, fmt.Errorf("can't reach %s (%v) - check this machine's internet, or set the API endpoint under Advanced", c.APIEndpoint, err)
+		}
 		return ui.PairResult{}, nil, fmt.Errorf("credentials check failed: %v", err)
 	}
 	if err := os.MkdirAll(c.SavePath, 0o755); err != nil {
@@ -394,13 +396,7 @@ func pair() error {
 	cfg.AccessSecret = ask("API Access Secret", cfg.AccessSecret)
 	cfg.FacilityID = ask("API Facility ID", cfg.FacilityID)
 	cfg.SavePath = ask("Gate provider save path (folder the gate software watches)", cfg.SavePath)
-	cfg.APIEndpoint = ask("API endpoint", cfg.APIEndpoint)
-	// A bare hostname gets the scheme it should have; a plain-http endpoint to
-	// anywhere but loopback is refused by Validate below (the HMAC headers
-	// must never cross the wire in the clear).
-	if cfg.APIEndpoint != "" && !strings.Contains(cfg.APIEndpoint, "://") {
-		cfg.APIEndpoint = "https://" + cfg.APIEndpoint
-	}
+	cfg.APIEndpoint = config.NormalizeEndpoint(ask("API endpoint", cfg.APIEndpoint))
 	if err := cfg.Validate(); err != nil {
 		return err
 	}

@@ -44,3 +44,26 @@ func TestValidateAllowsLoopbackHTTP(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeEndpoint(t *testing.T) {
+	cases := map[string]string{
+		// Household names of EITHER brand mean "the UnitRise API" - handing
+		// the SPA host to the agent fails with a confusing 404 otherwise.
+		"unitrise.com":              DefaultAPIEndpoint,
+		"https://www.unitrise.com/": DefaultAPIEndpoint,
+		"api.unitrise.com":          DefaultAPIEndpoint,
+		"app.mytruckyards.com":      DefaultAPIEndpoint, // the old broken default
+		"MYTRUCKYARDS.COM":          DefaultAPIEndpoint,
+		// Real hosts pass through (scheme added when missing).
+		"truckpark-backend.onrender.com": "https://truckpark-backend.onrender.com",
+		"https://example.com":            "https://example.com",
+		"http://127.0.0.1:4000":          "http://127.0.0.1:4000",
+		"":                               "",
+		"  ":                             "",
+	}
+	for in, want := range cases {
+		if got := NormalizeEndpoint(in); got != want {
+			t.Fatalf("NormalizeEndpoint(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

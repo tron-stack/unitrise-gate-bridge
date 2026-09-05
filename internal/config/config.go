@@ -48,7 +48,36 @@ type Config struct {
 	UIPort int `json:"uiPort,omitempty"`
 }
 
-const DefaultAPIEndpoint = "https://app.mytruckyards.com"
+// The UnitRise-branded API host - an alias for the same backend that serves
+// mytruckyards.com (one deploy, two products; the customer-facing name here
+// is UnitRise). Ops note: this must exist as a custom domain on the backend
+// service; before 2026-09-05 the default was app.mytruckyards.com, a host
+// that was never in DNS at all ("no such host" on every default pairing).
+const DefaultAPIEndpoint = "https://api.unitrise.com"
+
+// NormalizeEndpoint turns whatever a person types into a usable API base:
+// trims, adds https:// when the scheme is missing, and maps the product's
+// household names (either brand, with or without www/app/api) onto the real
+// API host - someone typing "unitrise.com" means "the UnitRise API", and
+// handing that to the SPA host would fail with a confusing 404 instead.
+// Anything else (Render URL, localhost for tests) passes through untouched.
+func NormalizeEndpoint(s string) string {
+	e := strings.TrimSpace(s)
+	if e == "" {
+		return ""
+	}
+	if !strings.Contains(e, "://") {
+		e = "https://" + e
+	}
+	host := strings.TrimSuffix(strings.TrimPrefix(e, "https://"), "/")
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "http://"), "/")
+	switch strings.ToLower(host) {
+	case "unitrise.com", "www.unitrise.com", "app.unitrise.com", "api.unitrise.com",
+		"mytruckyards.com", "www.mytruckyards.com", "app.mytruckyards.com", "api.mytruckyards.com":
+		return DefaultAPIEndpoint
+	}
+	return e
+}
 
 func Dir() string {
 	if v := os.Getenv("UNITRISE_GATE_CONFIG"); v != "" {
