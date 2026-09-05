@@ -1,4 +1,4 @@
-VERSION ?= 0.4.0
+VERSION ?= 0.4.1
 LDFLAGS := -s -w -X github.com/mytruckyards/unitrise-gate-bridge/internal/api.AgentVersion=$(VERSION)
 
 .PHONY: build release sign test clean winres

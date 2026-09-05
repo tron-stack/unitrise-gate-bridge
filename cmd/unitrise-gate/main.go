@@ -72,10 +72,30 @@ Docs & help: https://unitrise.com/help
 }
 
 func main() {
-	cmd := "run"
-	if len(os.Args) > 1 {
-		cmd = os.Args[1]
+	// No command = show help, never default into `run`. The service always
+	// passes "run" explicitly (SCM args / launchd ProgramArguments), so the
+	// only people who arrive here bare are humans - most of them site staff
+	// who just double-clicked the downloaded exe expecting a setup wizard.
+	// Defaulting to `run` gave them a config error flashing in a console
+	// that closed before it could be read (user report 2026-09-05).
+	if len(os.Args) < 2 {
+		usage(os.Stdout)
+		if launchedByDoubleClick() {
+			fmt.Print(`
+It looks like the agent was double-clicked. This program is the agent itself,
+not a setup wizard. To install it:
+
+  1. Download install.ps1 from the same place as this exe (keep them together).
+  2. Right-click Start -> "Windows PowerShell (Admin)", cd to that folder, run:
+       powershell -ExecutionPolicy Bypass -File .\install.ps1
+  3. The installer walks through pairing and starts the background service.
+
+Press Enter to close this window...`)
+			fmt.Scanln()
+		}
+		return
 	}
+	cmd := os.Args[1]
 	var err error
 	switch cmd {
 	case "pair":
