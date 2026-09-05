@@ -27,8 +27,9 @@ propagating**, which is why the console alarms on a stale heartbeat.
 ## Layout
 
 ```
-cmd/unitrise-gate/      the agent binary (pair / test / run / force / ui / service)
-cmd/unitrise-gate-tray/ the tray / menu-bar companion (the agent's visible face)
+cmd/unitrise-gate/      THE binary: installer + agent + tray + dashboard in one
+                        (pair / test / run / force / ui / tray / service /
+                         install / uninstall)
 internal/trayicon/      generated tray icons       → tools/gen-trayicons
 internal/api/           signed HTTP client        → docs/API_CONTRACT.md
 internal/config/        machine-scoped config.json (ProgramData / Library) + Windows ACLs
@@ -46,20 +47,32 @@ scripts/                install.ps1 / uninstall.ps1 (Windows)
 
 ```
 make build          # host binary → dist/
-make release        # agent: windows/amd64 (+ version resource) + darwin
-                    #   arm64/amd64 + linux/amd64; tray: windows/amd64
-                    #   (-H=windowsgui); + install scripts + SHA256SUMS → dist/
-make tray-darwin    # darwin tray builds (needs a Mac: the menu bar is
-                    #   cgo/Cocoa, so the ubuntu release runner can't cross-
-                    #   compile them - they ship with the Mac release pass)
+make release        # windows/amd64 (ONE exe: installer+agent+tray+dashboard,
+                    #   -H=windowsgui, version resource) + darwin arm64/amd64
+                    #   + linux/amd64 + install scripts + SHA256SUMS → dist/
 make test           # go vet + unit tests (template engine, config, lock)
 ```
 
-The agent is pure Go (`golang.org/x/sys` for the Windows service, named-mutex
-lock, and config-dir ACLs); the tray adds `fyne.io/systray`. Binaries are
-static; nothing to install on the site machine but the exes. The Windows exes
-carry a proper version resource (ProductName "UnitRise Gate Bridge", version,
-company) so Explorer and Task Manager identify them.
+Pure Go throughout (`golang.org/x/sys` for the Windows service, registry,
+named-mutex lock, config-dir ACLs; `fyne.io/systray` for the tray - its
+Windows backend is syscall-only, so the ubuntu release runner cross-compiles
+everything). The Windows exe is a GUI-subsystem image so double-click and the
+login tray never flash a console; CLI commands re-attach to the parent
+terminal (`console_windows.go`). It carries a proper version resource
+(ProductName "UnitRise Gate Bridge", version, company) so Explorer and Task
+Manager identify it.
+
+## The built-in installer (Windows)
+
+One download, one double-click. The exe detects it isn't installed, asks,
+elevates (UAC), copies itself to `Program Files\UnitRise Gate Bridge`,
+registers the service (auto-start + recovery actions) and the login tray
+icon, writes the Add/Remove Programs entry, adds itself to PATH, starts
+everything, and opens the dashboard - whose setup-mode pairing form finishes
+the job. Re-running the installer over an existing install is the update
+path (pairing untouched). Double-clicking an installed copy just opens the
+dashboard. Removal: Add/Remove Programs, or `unitrise-gate uninstall`
+(pairing kept; the gate's last code file is never touched).
 
 ## Setup mode + dashboard pairing
 
@@ -76,34 +89,37 @@ remains for scripted/admin installs.
 
 ## The tray (why the agent isn't invisible)
 
-`unitrise-gate-tray` is the agent's visible face: a UnitRise hexagon by the
-clock (Windows) / in the menu bar (macOS) - amber when healthy, red when the
-agent reports a problem (the detail is right in the menu), gray when the
-service isn't running. The menu shows facility, code count, and last sync,
-with one-click **Open dashboard** and **Sync now**. It's a separate binary on
-purpose: the agent stays the headless audited sync core; the tray only reads
-the localhost status API (plus the dashboard's one harmless force action),
-and quitting the tray never touches the service. install.ps1 sets it to run
-at login for every user of the machine; agent self-update (`unitrise-gate
-update`) does NOT update the tray - it's a thin shell that rides reinstalls.
+`unitrise-gate tray` is the program's visible face: a UnitRise hexagon by
+the clock - amber when healthy, red when the agent reports a problem (the
+detail is right in the menu), gray when the service isn't running or "Not
+connected yet" before pairing. The menu shows facility, code count, and last
+sync, with one-click **Open dashboard** and **Sync now**. Same binary,
+separate process on purpose: the sync core runs headless in the service; the
+tray only reads the localhost status API (plus the dashboard's one harmless
+force action), and quitting the tray never touches the service. Windows-only
+for now (`tray_windows.go` - the systray Windows backend is cgo-free); the
+macOS menu-bar app lands with the Mac release pass as a proper .app.
 
 ## Windows install (the normal path)
 
-From an **Administrator PowerShell** in the folder holding the downloaded
-`unitrise-gate-windows-amd64.exe`, `unitrise-gate-tray-windows-amd64.exe`,
-and `install.ps1`:
+Download `unitrise-gate-windows-amd64.exe` and **double-click it** - the
+built-in installer (above) does the rest, and the dashboard's pairing form
+finishes setup.
+
+Scripted alternative (unattended installs, RMM tools): `install.ps1` next to
+the exe, from an Administrator PowerShell:
 
 ```
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The installer copies the agent into `Program Files\UnitRise Gate Bridge`,
-adds it to the system PATH, walks through pairing (credentials from the
-console's Gate hardware card), proves the credentials and the save folder
-work, then installs and starts the Windows service (auto-start, delayed;
-crash-restart recovery actions set). Re-running updates the binary in place
-and keeps the pairing. `uninstall.ps1` reverses it (`-PurgeConfig` also
-removes the pairing).
+It copies the agent into `Program Files\UnitRise Gate Bridge`, adds it to
+the system PATH, walks through pairing in the terminal, proves the
+credentials and the save folder work, then installs and starts the Windows
+service (auto-start, delayed; crash-restart recovery actions set) and the
+login tray. Re-running either installer updates the binary in place and
+keeps the pairing. `uninstall.ps1` (or Add/Remove Programs) reverses it
+(`-PurgeConfig` also removes the pairing).
 
 Manual equivalent - or on macOS (launchd; run with sudo):
 

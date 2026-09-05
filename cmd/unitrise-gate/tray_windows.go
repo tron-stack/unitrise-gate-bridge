@@ -1,28 +1,19 @@
-// unitrise-gate-tray - the agent's visible face: a branded tray icon
-// (Windows) / menu-bar item (macOS) so the Gate Bridge never lives secretly
-// in a terminal. Deliberately a SEPARATE binary from the agent:
-//
-//   - the agent is the audited sync core, running headless as a service; the
-//     tray is a per-user companion that only ever READS the localhost status
-//     API (plus the one harmless "force full update" action the dashboard
-//     already exposes),
-//   - Windows builds it with -H=windowsgui so launching it at login never
-//     flashes a console window - which a console-subsystem binary always
-//     would, and which is the exact papercut this app exists to remove.
-//
-// It discovers the agent on the dashboard's localhost ports, polls status
-// every few seconds, and shows one of three states: amber (healthy), red
-// (agent reporting a problem, with the detail in the menu), gray (agent not
-// running). Installed to run at login by install.ps1 (Windows Run key); the
-// macOS LaunchAgent lands with the Mac release pass.
+//go:build windows
+
 package main
+
+// The tray: the agent's visible face, folded into the single binary as
+// `unitrise-gate tray` (installed to run at login). It only ever READS the
+// localhost status API plus the dashboard's one harmless force action - the
+// sync core runs in the service, and quitting the tray never touches it.
+// Windows-only: the exe is built -H=windowsgui so a login launch never
+// flashes a console. macOS gets a real menu-bar app with the Mac release
+// pass (Cocoa wants an app bundle, not a bare binary).
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os/exec"
-	"runtime"
 	"time"
 
 	"fyne.io/systray"
@@ -34,12 +25,12 @@ import (
 
 // The dashboard binds 127.0.0.1 on DefaultPort, bumping up to +4 when taken
 // (two agents on one machine) - probe the same window.
-const portProbes = 5
+const trayPortProbes = 5
 
-// snapshot mirrors the fields the tray needs from internal/status.Snapshot
+// traySnapshot mirrors the fields the tray needs from status.Snapshot
 // (decoded loosely on purpose - an older agent answering with fewer fields
 // must not break the tray).
-type snapshot struct {
+type traySnapshot struct {
 	AgentVersion string    `json:"agentVersion"`
 	FacilityName string    `json:"facilityName"`
 	Provider     string    `json:"provider"`
@@ -52,40 +43,27 @@ type snapshot struct {
 	Paired *bool `json:"paired"`
 }
 
-var httpClient = &http.Client{Timeout: 2 * time.Second}
+var trayHTTP = &http.Client{Timeout: 2 * time.Second}
 
 // findAgent probes the dashboard ports and returns (baseURL, snapshot, ok).
-func findAgent() (string, snapshot, bool) {
-	for p := ui.DefaultPort; p < ui.DefaultPort+portProbes; p++ {
+func findAgent() (string, traySnapshot, bool) {
+	for p := ui.DefaultPort; p < ui.DefaultPort+trayPortProbes; p++ {
 		base := fmt.Sprintf("http://127.0.0.1:%d", p)
-		resp, err := httpClient.Get(base + "/api/status")
+		resp, err := trayHTTP.Get(base + "/api/status")
 		if err != nil {
 			continue
 		}
-		var s snapshot
+		var s traySnapshot
 		err = json.NewDecoder(resp.Body).Decode(&s)
 		resp.Body.Close()
 		if err == nil {
 			return base, s, true
 		}
 	}
-	return "", snapshot{}, false
+	return "", traySnapshot{}, false
 }
 
-func openBrowser(url string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	case "darwin":
-		cmd = exec.Command("open", url)
-	default:
-		cmd = exec.Command("xdg-open", url)
-	}
-	_ = cmd.Start()
-}
-
-func ago(t time.Time) string {
+func agoShort(t time.Time) string {
 	if t.IsZero() {
 		return "never"
 	}
@@ -102,11 +80,12 @@ func ago(t time.Time) string {
 	}
 }
 
-func main() {
-	systray.Run(onReady, func() {})
+func trayCmd() error {
+	systray.Run(trayReady, func() {})
+	return nil
 }
 
-func onReady() {
+func trayReady() {
 	systray.SetIcon(trayicon.Off())
 	systray.SetTooltip("UnitRise Gate Bridge")
 
@@ -118,30 +97,30 @@ func onReady() {
 	detailLine.Disable()
 	detailLine.Hide()
 	systray.AddSeparator()
-	openItem := systray.AddMenuItem("Open dashboard", "Open the local status page")
+	openItem := systray.AddMenuItem("Open dashboard", "Status, activity, credentials")
 	syncItem := systray.AddMenuItem("Sync now", "Push a full update to the gate software")
 	systray.AddSeparator()
-	verItem := systray.AddMenuItem("Tray "+api.AgentVersion, "")
+	verItem := systray.AddMenuItem("Version "+api.AgentVersion, "")
 	verItem.Disable()
 	quitItem := systray.AddMenuItem("Quit", "Close this icon (the sync service keeps running)")
 
 	// The tray never blocks on the poll: state lands over a channel from a
 	// single poller goroutine, menu clicks are handled as they come.
-	type state struct {
+	type trayState struct {
 		base string
-		snap snapshot
+		snap traySnapshot
 		up   bool
 	}
-	states := make(chan state, 1)
+	states := make(chan trayState, 1)
 	go func() {
 		for {
 			base, snap, up := findAgent()
-			states <- state{base, snap, up}
+			states <- trayState{base, snap, up}
 			time.Sleep(5 * time.Second)
 		}
 	}()
 
-	cur := state{}
+	cur := trayState{}
 	for {
 		select {
 		case cur = <-states:
@@ -150,7 +129,7 @@ func onReady() {
 				systray.SetIcon(trayicon.Off())
 				systray.SetTooltip("UnitRise Gate Bridge - agent not running")
 				statusLine.SetTitle("Agent not running")
-				detailLine.SetTitle("Start it: services list, or `unitrise-gate service start`")
+				detailLine.SetTitle("Start it from the Services list (UnitRise Gate Bridge)")
 				detailLine.Show()
 				syncItem.Disable()
 			case cur.snap.Paired != nil && !*cur.snap.Paired:
@@ -168,7 +147,7 @@ func onReady() {
 				if where == "" {
 					where = "your facility"
 				}
-				line := fmt.Sprintf("Online - %d codes - synced %s", cur.snap.CodeCount, ago(cur.snap.LastApplyAt))
+				line := fmt.Sprintf("Online - %d codes - synced %s", cur.snap.CodeCount, agoShort(cur.snap.LastApplyAt))
 				systray.SetTooltip("UnitRise Gate Bridge - " + line)
 				statusLine.SetTitle(line)
 				detailLine.SetTitle(where + " (" + cur.snap.Provider + ")")
@@ -198,7 +177,7 @@ func onReady() {
 		case <-syncItem.ClickedCh:
 			if cur.base != "" {
 				go func(base string) {
-					resp, err := httpClient.Post(base+"/api/force", "text/plain", nil)
+					resp, err := trayHTTP.Post(base+"/api/force", "text/plain", nil)
 					if err == nil {
 						resp.Body.Close()
 					}

@@ -62,38 +62,34 @@ $dest = Join-Path $env:ProgramFiles "UnitRise Gate Bridge"
 $exe  = Join-Path $dest "unitrise-gate.exe"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 
-# A running service holds the exe open - stop it for the copy, remember to restart.
+# The exe is a GUI-subsystem image (one binary = installer + agent + tray),
+# so PowerShell doesn't wait for it on its own - Start-Process -Wait does,
+# and -NoNewWindow shares this console for the interactive pairing prompts.
+function Invoke-Agent {
+    param([string[]]$AgentArgs)
+    $p = Start-Process -FilePath $exe -ArgumentList $AgentArgs -Wait -NoNewWindow -PassThru
+    return $p.ExitCode
+}
+
+# A running service or tray holds the exe open - stop both for the copy.
 $svc = Get-Service -Name "UnitRiseGateBridge" -ErrorAction SilentlyContinue
 $svcWasRunning = $svc -and $svc.Status -eq "Running"
 if ($svcWasRunning) {
     Write-Host "  Stopping the running service for the update..." -ForegroundColor DarkGray
     Stop-Service -Name "UnitRiseGateBridge" -Force
 }
+Get-CimInstance Win32_Process -Filter "Name='unitrise-gate.exe'" -ErrorAction SilentlyContinue |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Start-Sleep -Milliseconds 400
 
 Copy-Item -Force $ExePath $exe
 Write-Host "  Installed  $exe"
 
-# ── Tray companion (the agent's visible face) ────────────────────────────────
-# unitrise-gate-tray-windows-amd64.exe next to this script installs alongside
-# the agent and runs at login: a UnitRise icon by the clock showing sync
-# health, with the dashboard one click away. Optional - older release
-# bundles without it still install fine.
-$trayExe = Join-Path $dest "unitrise-gate-tray.exe"
-$traySrc = @("unitrise-gate-tray-windows-amd64.exe", "unitrise-gate-tray.exe") |
-    ForEach-Object { Join-Path (Split-Path -Parent $ExePath) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
-if ($traySrc) {
-    # A running tray holds its exe open - stop it for the copy.
-    Get-Process -Name "unitrise-gate-tray" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 300
-    Copy-Item -Force $traySrc $trayExe
-    # Run at login for every user of this machine (site PCs are shared).
-    $runKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
-    Set-ItemProperty -Path $runKey -Name "UnitRiseGateBridgeTray" -Value "`"$trayExe`""
-    Start-Process -FilePath $trayExe
-    Write-Host "  Installed  $trayExe (tray icon, starts at login)"
-} else {
-    Write-Host "  Tray app not found beside the installer - skipping (download unitrise-gate-tray-windows-amd64.exe for the tray icon)." -ForegroundColor DarkGray
-}
+# ── Tray icon (the same exe, `tray` mode) at login for every user ────────────
+$runKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+Set-ItemProperty -Path $runKey -Name "UnitRiseGateBridgeTray" -Value "`"$exe`" tray"
+Start-Process -FilePath $exe -ArgumentList "tray"
+Write-Host "  Tray icon registered (starts at login)"
 
 # ── System PATH (so `unitrise-gate` works in any admin console) ──────────────
 $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
@@ -110,15 +106,13 @@ if (Test-Path $configPath) {
 } else {
     Write-Host ""
     Write-Host "  Pairing - have the console's Gate hardware card open (Generate bridge credentials):" -ForegroundColor White
-    & $exe pair
-    if ($LASTEXITCODE -ne 0) { Fail "pairing didn't complete - run `"$exe`" pair to retry." }
+    if ((Invoke-Agent @("pair")) -ne 0) { Fail "pairing didn't complete - run `"$exe`" pair to retry." }
 }
 
 # ── Prove it works before leaving it unattended ──────────────────────────────
 Write-Host ""
 Write-Host "  Testing credentials and the save folder..." -ForegroundColor White
-& $exe test
-if ($LASTEXITCODE -ne 0) { Fail "the test failed - fix the issue above, then run `"$exe`" test again." }
+if ((Invoke-Agent @("test")) -ne 0) { Fail "the test failed - fix the issue above, then run `"$exe`" test again." }
 
 # ── Service ──────────────────────────────────────────────────────────────────
 if ($NoService) {
@@ -127,11 +121,9 @@ if ($NoService) {
     Write-Host "    unitrise-gate service install; unitrise-gate service start"
 } else {
     if (-not $svc) {
-        & $exe service install
-        if ($LASTEXITCODE -ne 0) { Fail "service install failed." }
+        if ((Invoke-Agent @("service", "install")) -ne 0) { Fail "service install failed." }
     }
-    & $exe service start
-    if ($LASTEXITCODE -ne 0) { Fail "service start failed - check: Get-Service UnitRiseGateBridge" }
+    if ((Invoke-Agent @("service", "start")) -ne 0) { Fail "service start failed - check: Get-Service UnitRiseGateBridge" }
     Write-Host ""
     Write-Host "  Service running." -ForegroundColor Green
 }

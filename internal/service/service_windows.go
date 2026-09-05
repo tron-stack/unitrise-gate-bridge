@@ -115,6 +115,22 @@ func Uninstall() error {
 func Start() error { return sc("start") }
 func Stop() error  { return sc("stop") }
 
+// Installed reports whether the service is registered (used by the built-in
+// installer to decide between fresh-install and update-in-place).
+func Installed() bool {
+	m, err := mgr.Connect()
+	if err != nil {
+		return false
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(Name)
+	if err != nil {
+		return false
+	}
+	s.Close()
+	return true
+}
+
 func sc(verb string) error {
 	out, err := exec.Command("sc", verb, Name).CombinedOutput()
 	if err != nil {

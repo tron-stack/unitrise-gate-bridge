@@ -22,14 +22,17 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $dest = Join-Path $env:ProgramFiles "UnitRise Gate Bridge"
 $exe  = Join-Path $dest "unitrise-gate.exe"
 
-# Tray first: it holds its exe open, which would block removing Program Files.
-Get-Process -Name "unitrise-gate-tray" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+# Tray first (the same exe in `tray` mode): it holds the exe open, which
+# would block removing Program Files.
+Get-CimInstance Win32_Process -Filter "Name='unitrise-gate.exe'" -ErrorAction SilentlyContinue |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "UnitRiseGateBridgeTray" -ErrorAction SilentlyContinue
 
 $svc = Get-Service -Name "UnitRiseGateBridge" -ErrorAction SilentlyContinue
 if ($svc) {
     if ($svc.Status -eq "Running") { Stop-Service -Name "UnitRiseGateBridge" -Force }
-    if (Test-Path $exe) { & $exe service uninstall } else { sc.exe delete UnitRiseGateBridge | Out-Null }
+    # GUI-subsystem exe: Start-Process -Wait, or PowerShell races ahead.
+    if (Test-Path $exe) { Start-Process -FilePath $exe -ArgumentList "service","uninstall" -Wait -NoNewWindow } else { sc.exe delete UnitRiseGateBridge | Out-Null }
     Write-Host "Service removed."
 }
 

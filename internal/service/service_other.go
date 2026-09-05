@@ -48,3 +48,6 @@ func Uninstall() error {
 
 func Start() error { return exec.Command("launchctl", "start", Name).Run() }
 func Stop() error  { return exec.Command("launchctl", "stop", Name).Run() }
+
+// Installed is only meaningful on Windows (the built-in installer).
+func Installed() bool { return false }

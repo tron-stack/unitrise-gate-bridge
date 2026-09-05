@@ -56,44 +56,43 @@ func usage(w *os.File) {
 
 Usage: unitrise-gate <command>
 
-Setup (in order, on the gate computer):
+Setup (on the gate computer - or just double-click the exe on Windows):
+  install    install on this machine: service + tray icon + setup page (Windows)
   pair       enter the credentials from the console's Gate hardware card
   test       verify the credentials and prove the save folder is writable
   service    install | uninstall | start | stop   (Windows service / launchd)
 
 Day to day:
-  run        run in the foreground (the service runs this for you)
   ui         open the local dashboard (http://127.0.0.1:%d)
+  tray       run the tray icon (installed to start at login on Windows)
   force      push one full update right now, then exit
+  run        run in the foreground (the service runs this for you)
   update     download and install the latest published agent
   version    print the agent version
+  uninstall  remove the service, tray, and program (Windows; pairing is kept)
 
 Docs & help: https://unitrise.com/help
 `, api.AgentVersion, ui.DefaultPort)
 }
 
+// hasConsole: whether this process is attached to a terminal. On Windows the
+// exe is a GUI-subsystem image (one binary is installer + agent + tray), so
+// this comes from AttachConsole - false means Explorer double-click / UAC
+// relaunch, where messages must be MessageBoxes, not prints nobody sees.
+var hasConsole bool
+
 func main() {
-	// No command = show help, never default into `run`. The service always
-	// passes "run" explicitly (SCM args / launchd ProgramArguments), so the
-	// only people who arrive here bare are humans - most of them site staff
-	// who just double-clicked the downloaded exe expecting a setup wizard.
-	// Defaulting to `run` gave them a config error flashing in a console
-	// that closed before it could be read (user report 2026-09-05).
+	hasConsole = attachParentConsole()
+	// No command: from a terminal, show help; double-clicked, be the
+	// installer (fresh machine) or open the dashboard (installed). Never
+	// default into `run` - the service always passes "run" explicitly (SCM
+	// args / launchd ProgramArguments), so bare launches are humans.
 	if len(os.Args) < 2 {
-		usage(os.Stdout)
-		if launchedByDoubleClick() {
-			fmt.Print(`
-It looks like the agent was double-clicked. This program is the agent itself,
-not a setup wizard. To install it:
-
-  1. Download install.ps1 from the same place as this exe (keep them together).
-  2. Right-click Start -> "Windows PowerShell (Admin)", cd to that folder, run:
-       powershell -ExecutionPolicy Bypass -File .\install.ps1
-  3. The installer walks through pairing and starts the background service.
-
-Press Enter to close this window...`)
-			fmt.Scanln()
+		if !hasConsole {
+			guiEntry()
+			return
 		}
+		usage(os.Stdout)
 		return
 	}
 	cmd := os.Args[1]
@@ -109,6 +108,12 @@ Press Enter to close this window...`)
 		err = run(true)
 	case "service":
 		err = serviceCmd()
+	case "tray":
+		err = trayCmd()
+	case "install":
+		err = installCmd()
+	case "uninstall":
+		err = uninstallCmd()
 	case "ui":
 		err = openUI()
 	case "update":
@@ -122,8 +127,8 @@ Press Enter to close this window...`)
 		usage(os.Stderr)
 		os.Exit(2)
 	}
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+	if err != nil && err != errQuiet {
+		report(err.Error(), true)
 		os.Exit(1)
 	}
 }
@@ -435,9 +440,8 @@ func test() error {
 	return nil
 }
 
-// openUI opens the local dashboard in the default browser (agent must be running).
-func openUI() error {
-	url := fmt.Sprintf("http://127.0.0.1:%d", ui.DefaultPort)
+// openBrowser opens a URL in the default browser (shared by ui/tray/installer).
+func openBrowser(url string) error {
 	var cmd *exec.Cmd
 	switch runtimeGOOS() {
 	case "windows":
@@ -447,8 +451,14 @@ func openUI() error {
 	default:
 		cmd = exec.Command("xdg-open", url)
 	}
-	fmt.Println("opening", url)
 	return cmd.Start()
+}
+
+// openUI opens the local dashboard in the default browser (agent must be running).
+func openUI() error {
+	url := fmt.Sprintf("http://127.0.0.1:%d", ui.DefaultPort)
+	fmt.Println("opening", url)
+	return openBrowser(url)
 }
 
 func runtimeGOOS() string { return runtime.GOOS }
