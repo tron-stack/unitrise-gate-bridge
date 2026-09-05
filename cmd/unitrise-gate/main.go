@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/api"
@@ -135,23 +136,83 @@ func newLogger(c *config.Config) (*logging.Logger, error) {
 	return logging.New(path)
 }
 
-func run(forceOnce bool) error {
-	cfg, err := config.Load()
+// pairFromDashboard is the dashboard's pairing hook: build a candidate
+// config (preserving local-only knobs from any existing file), refuse it
+// unless the credentials AND the save folder prove out LIVE - the same bar
+// as `pair` + `test` - and only then persist it. Nothing unproven is ever
+// saved, and every (re)pair is logged loudly.
+func pairFromDashboard(req ui.PairRequest, log *logging.Logger) (ui.PairResult, *config.Config, error) {
+	c := &config.Config{APIEndpoint: config.DefaultAPIEndpoint}
+	if old, err := config.Load(); err == nil {
+		c = old // keep UIPort/LogFile/poll/file-name overrides
+	}
+	c.AccessKey = strings.TrimSpace(req.AccessKey)
+	c.AccessSecret = strings.TrimSpace(req.AccessSecret)
+	c.FacilityID = strings.TrimSpace(req.FacilityID)
+	if p := strings.TrimSpace(req.SavePath); p != "" {
+		c.SavePath = p
+	}
+	if e := strings.TrimSpace(req.APIEndpoint); e != "" {
+		c.APIEndpoint = e
+	}
+	if c.APIEndpoint != "" && !strings.Contains(c.APIEndpoint, "://") {
+		c.APIEndpoint = "https://" + c.APIEndpoint
+	}
+	if err := c.Validate(); err != nil {
+		return ui.PairResult{}, nil, err
+	}
+	st, _, err := api.New(c).GetState("")
 	if err != nil {
-		return fmt.Errorf("no config (%v) - run `unitrise-gate pair` first", err)
+		return ui.PairResult{}, nil, fmt.Errorf("credentials check failed: %v", err)
 	}
-	if err := cfg.Validate(); err != nil {
-		return err
+	if err := os.MkdirAll(c.SavePath, 0o755); err != nil {
+		return ui.PairResult{}, nil, fmt.Errorf("save path: %v", err)
 	}
+	probe := filepath.Join(c.SavePath, "unitrise-bridge-probe.tmp")
+	if err := os.WriteFile(probe, []byte("unitrise gate bridge write probe\n"), 0o644); err != nil {
+		return ui.PairResult{}, nil, fmt.Errorf("cannot write into %s: %v", c.SavePath, err)
+	}
+	os.Remove(probe)
+	if err := c.Save(); err != nil {
+		return ui.PairResult{}, nil, fmt.Errorf("saving the pairing: %v", err)
+	}
+	log.Infof("paired from the dashboard: facility %q (%s), save path %s", st.Facility.Name, st.Provider, c.SavePath)
+	return ui.PairResult{FacilityName: st.Facility.Name, Provider: st.Provider, CodeCount: len(st.Credentials)}, c, nil
+}
+
+func run(forceOnce bool) error {
 	// ONE agent per machine, ever: a second copy (the service already running,
 	// plus a tech's console `run`) would double-write the vendor file and
 	// corrupt delta rosters. `force` counts too - it runs a real cycle.
+	// The lock comes FIRST - even an unpaired agent serves the dashboard, and
+	// two setup agents would fight over the pairing.
 	release, err := lock.Acquire()
 	if err != nil {
 		return err
 	}
 	defer release()
-	log, err := newLogger(cfg)
+
+	// SETUP MODE: a missing/invalid config no longer exits - the agent stays
+	// up serving the dashboard, whose pairing form is now the way in (the
+	// tray points at it). This also stops an unpaired service from crash-
+	// looping under SCM recovery. `force` still demands a pairing: it exists
+	// to push a real cycle.
+	cfg, cfgErr := config.Load()
+	if cfgErr == nil {
+		cfgErr = cfg.Validate()
+	}
+	if cfgErr != nil {
+		if forceOnce {
+			return fmt.Errorf("no valid config (%v) - pair first (dashboard or `unitrise-gate pair`)", cfgErr)
+		}
+		cfg = nil
+	}
+
+	logCfg := cfg
+	if logCfg == nil {
+		logCfg = &config.Config{}
+	}
+	log, err := newLogger(logCfg)
 	if err != nil {
 		return err
 	}
@@ -159,31 +220,86 @@ func run(forceOnce bool) error {
 	status.Init(api.AgentVersion)
 	logging.Hook = status.AppendLog
 
-	s := syncer.New(cfg, log)
-	// Local dashboard (127.0.0.1) - the UnitRise-styled status window.
-	if cfg.UIPort >= 0 {
-		if addr, uerr := ui.Serve(cfg.UIPort, s.ForceFullUpdate); uerr != nil {
+	// The dashboard serves across pairings: force routes to the CURRENT
+	// syncer, and a successful pair lands on pairCh to (re)start the loop.
+	var current atomic.Pointer[syncer.Syncer]
+	pairCh := make(chan *config.Config, 1)
+	hooks := ui.Hooks{
+		OnForce: func() {
+			if s := current.Load(); s != nil {
+				s.ForceFullUpdate()
+			}
+		},
+		OnPair: func(req ui.PairRequest) (ui.PairResult, error) {
+			res, newCfg, perr := pairFromDashboard(req, log)
+			if perr != nil {
+				log.Errorf("dashboard pairing refused: %v", perr)
+				return res, perr
+			}
+			// Replace any queued (older) pairing with this one.
+			select {
+			case <-pairCh:
+			default:
+			}
+			pairCh <- newCfg
+			return res, nil
+		},
+	}
+	uiPort := 0
+	if cfg != nil {
+		uiPort = cfg.UIPort
+	}
+	if uiPort >= 0 {
+		if addr, uerr := ui.Serve(uiPort, hooks); uerr != nil {
 			log.Errorf("dashboard: %v", uerr)
 		} else {
 			log.Infof("dashboard at %s", addr)
 		}
 	}
+
 	loop := func(ctx context.Context) {
-		// Log when a newer agent is published (ctx-tied; retries hourly until
-		// the first successful check, then daily). LOG-ONLY - the swap is
-		// always a person running `unitrise-gate update` (the console shows
-		// the same "update available" chip from heartbeats).
-		go update.Watch(ctx, api.New(cfg), log.Infof)
-		if forceOnce {
-			// One forced cycle, then leave - used by installers and support.
-			s.ForceFullUpdate()
+		for {
+			if cfg == nil {
+				status.Update(func(v *status.Snapshot) {
+					v.Paired, v.State, v.OK = false, "setup", true
+					v.Detail = "waiting for credentials"
+				})
+				log.Infof("setup mode: not paired yet - enter the credentials on the local dashboard")
+				select {
+				case <-ctx.Done():
+					return
+				case cfg = <-pairCh:
+				}
+			}
+			status.Update(func(v *status.Snapshot) { v.Paired, v.State = true, "running" })
+			s := syncer.New(cfg, log)
+			current.Store(s)
 			cctx, cancel := context.WithCancel(ctx)
-			go func() { s.Run(cctx) }()
-			<-ctx.Done()
-			cancel()
-			return
+			// Log when a newer agent is published (ctx-tied; retries hourly
+			// until the first successful check, then daily). LOG-ONLY - the
+			// swap is always a person running `unitrise-gate update` (the
+			// console shows the same "update available" chip from heartbeats).
+			go update.Watch(cctx, api.New(cfg), log.Infof)
+			if forceOnce {
+				// One forced cycle, then leave - used by installers and support.
+				s.ForceFullUpdate()
+			}
+			done := make(chan struct{})
+			go func() { s.Run(cctx); close(done) }()
+			select {
+			case <-ctx.Done():
+				cancel()
+				<-done
+				return
+			case newCfg := <-pairCh:
+				// Credentials updated from the dashboard: restart the sync
+				// loop on the new pairing without dropping the process.
+				log.Infof("pairing changed - restarting sync with the new credentials")
+				cancel()
+				<-done
+				cfg = newCfg
+			}
 		}
-		s.Run(ctx)
 	}
 
 	if service.IsWindowsService() {
@@ -193,6 +309,8 @@ func run(forceOnce bool) error {
 	defer stop()
 	if forceOnce {
 		// Foreground force: run exactly one cycle worth of time.
+		s := syncer.New(cfg, log)
+		current.Store(s)
 		s.ForceFullUpdate()
 		one, cancel := context.WithCancel(ctx)
 		go func() { s.Run(one) }()

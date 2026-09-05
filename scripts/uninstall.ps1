@@ -22,6 +22,10 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $dest = Join-Path $env:ProgramFiles "UnitRise Gate Bridge"
 $exe  = Join-Path $dest "unitrise-gate.exe"
 
+# Tray first: it holds its exe open, which would block removing Program Files.
+Get-Process -Name "unitrise-gate-tray" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "UnitRiseGateBridgeTray" -ErrorAction SilentlyContinue
+
 $svc = Get-Service -Name "UnitRiseGateBridge" -ErrorAction SilentlyContinue
 if ($svc) {
     if ($svc.Status -eq "Running") { Stop-Service -Name "UnitRiseGateBridge" -Force }

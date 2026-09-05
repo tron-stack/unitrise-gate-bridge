@@ -43,6 +43,13 @@
   .log .err{color:#FCA5A5}
   .chip{display:inline-block;background:var(--amber-wash);color:var(--amber-deep);border-radius:999px;
         padding:2px 10px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em}
+  .pgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px}
+  @media(max-width:640px){.pgrid{grid-template-columns:1fr}}
+  .pgrid label{font-size:12px;font-weight:700;color:var(--muted);display:block}
+  .pgrid label small{font-weight:400}
+  .pgrid input{display:block;width:100%;margin-top:4px;padding:9px 12px;border:1px solid var(--line);
+        border-radius:10px;font:13px/1.4 inherit;color:var(--ink);background:var(--card-soft)}
+  .pgrid input:focus{outline:2px solid var(--amber);outline-offset:0;border-color:var(--amber)}
   footer{margin-top:18px;color:var(--muted);font-size:12px;text-align:center}
   a{color:#4338CA}
 </style>
@@ -69,7 +76,35 @@
     <button class="pill ghost" onclick="location.reload()">Refresh</button>
   </div>
 
-  <div class="grid">
+  <!-- Pairing: the whole card in setup mode, a collapsed "Update credentials"
+       panel once running. Same form, same /api/pair - credentials are proven
+       LIVE (API + save-folder write) before anything is saved. -->
+  <div class="card" id="pairCard" style="display:none;margin-bottom:14px">
+    <h2 id="pairTitle">Connect to UnitRise</h2>
+    <p id="pairIntro" style="margin:0 0 12px;color:var(--body);font-size:13px">
+      Enter the three credentials from the UnitRise console's <b>Gate hardware</b> card
+      (the property operator generates them with <i>Generate bridge credentials</i> and can
+      re-reveal them any time), plus the folder your gate software imports codes from.
+    </p>
+    <div class="pgrid">
+      <label>Access key<input id="pKey" autocomplete="off" /></label>
+      <label>Access secret<input id="pSecret" type="password" autocomplete="off" /></label>
+      <label>Facility ID<input id="pFacility" autocomplete="off" /></label>
+      <label>Save folder <small>(the gate software's import directory, e.g. C:\PTI)</small><input id="pSave" autocomplete="off" /></label>
+    </div>
+    <details style="margin:10px 0 0"><summary style="cursor:pointer;color:var(--muted);font-size:12px">Advanced</summary>
+      <div class="pgrid" style="margin-top:8px"><label>API endpoint <small>(only when support says so)</small><input id="pEndpoint" placeholder="https://app.mytruckyards.com" autocomplete="off" /></label></div>
+    </details>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:14px">
+      <button class="pill" id="pairBtn" style="margin-left:0">Verify &amp; save</button>
+      <span id="pairMsg" style="font-size:13px"></span>
+    </div>
+  </div>
+  <div style="margin:0 0 14px;text-align:right">
+    <button class="pill ghost" id="pairToggle" style="display:none;margin-left:0">Update credentials</button>
+  </div>
+
+  <div class="grid" id="mainGrid">
     <div class="card">
       <h2>Facility</h2>
       <dl>
@@ -77,6 +112,7 @@
         <dt>Provider</dt><dd><span class="chip" id="provider">-</span></dd>
         <dt>Codes</dt><dd id="codes">-</dd>
         <dt>Poll every</dt><dd id="poll">-</dd>
+        <dt>Next check</dt><dd id="nextPoll">-</dd>
       </dl>
     </div>
     <div class="card">
@@ -114,11 +150,23 @@
       $("targetFile").textContent = s.targetFile || "-";
       $("consume").textContent = s.consumeCmd || "(none)";
       $("lastApply").textContent = fmtT(s.lastApplyAt);
-      $("dot").className = "dot" + (s.ok ? "" : " bad");
-      $("statusMsg").textContent = s.ok ? "Service is running" : "Attention needed";
-      $("statusSub").textContent = s.ok
+      // Setup mode: the pairing card IS the page until credentials prove out.
+      const setup = s.paired === false;
+      if (setup && !pairOpen) { showPair(true, true); }
+      $("pairToggle").style.display = setup ? "none" : "";
+      $("mainGrid").style.display = setup ? "none" : "";
+      if (!setup && $("pSave").value === "" && s.savePath) $("pSave").value = s.savePath;
+      const nextIn = Math.round((new Date(s.nextPollAt) - Date.now()) / 1000);
+      $("nextPoll").textContent = !s.nextPollAt || isNaN(nextIn) || nextIn > 86400 ? "-"
+        : nextIn <= 0 ? "now" : nextIn < 90 ? "in " + nextIn + "s" : "in " + Math.round(nextIn / 60) + "m";
+      $("dot").className = "dot" + (s.ok && !setup ? "" : " bad");
+      $("statusMsg").textContent = setup ? "Waiting for setup" : s.ok ? "Service is running" : "Attention needed";
+      $("statusSub").textContent = setup
+        ? "enter the credentials below to connect this machine"
+        : s.ok
         ? (s.lastHash ? "in sync · state " + s.lastHash.slice(0, 12) + "…" : "waiting for first sync")
         : (s.detail || "last cycle failed - see activity");
+      $("forceBtn").style.display = setup ? "none" : "";
       const log = $("log");
       const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
       log.innerHTML = s.log.map((l) => l.startsWith("Error") ? '<span class="err">' + esc(l) + "</span>" : esc(l)).join("\n") || "…";
@@ -133,6 +181,51 @@
     $("forceBtn").disabled = true;
     try { await fetch("/api/force", { method: "POST" }); } finally { setTimeout(() => ($("forceBtn").disabled = false), 1500); }
   };
+
+  // ── pairing ────────────────────────────────────────────────────────────────
+  let pairOpen = false;
+  function showPair(open, setupMode) {
+    pairOpen = open;
+    $("pairCard").style.display = open ? "" : "none";
+    $("pairTitle").textContent = setupMode ? "Connect to UnitRise" : "Update credentials";
+    $("pairToggle").textContent = open ? "Cancel" : "Update credentials";
+  }
+  $("pairToggle").onclick = () => showPair(!pairOpen, false);
+  $("pairBtn").onclick = async () => {
+    const msg = $("pairMsg");
+    msg.style.color = "var(--muted)";
+    msg.textContent = "Verifying with UnitRise…";
+    $("pairBtn").disabled = true;
+    try {
+      const r = await fetch("/api/pair", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accessKey: $("pKey").value.trim(),
+          accessSecret: $("pSecret").value.trim(),
+          facilityId: $("pFacility").value.trim(),
+          savePath: $("pSave").value.trim(),
+          apiEndpoint: $("pEndpoint").value.trim(),
+        }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        msg.style.color = "var(--danger)";
+        msg.textContent = body.error || "Pairing failed - check the values and try again.";
+        return;
+      }
+      msg.style.color = "var(--success)";
+      msg.textContent = "Connected to " + (body.facilityName || "your facility") + " (" + (body.provider || "gate") + ", " + body.codeCount + " codes). Starting sync…";
+      $("pSecret").value = "";
+      setTimeout(() => { showPair(false, false); }, 2500);
+    } catch {
+      msg.style.color = "var(--danger)";
+      msg.textContent = "Couldn't reach the agent - is the service running?";
+    } finally {
+      $("pairBtn").disabled = false;
+    }
+  };
+
   tick(); setInterval(tick, 2000);
 </script>
 </body>

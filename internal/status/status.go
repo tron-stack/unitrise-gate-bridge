@@ -12,6 +12,12 @@ type Snapshot struct {
 	AgentVersion string    `json:"agentVersion"`
 	StartedAt    time.Time `json:"startedAt"`
 
+	// Paired=false is SETUP MODE: the agent is up serving this dashboard but
+	// has no (valid) credentials yet - the dashboard's pairing form is the
+	// way in. State is "setup" or "running".
+	Paired bool   `json:"paired"`
+	State  string `json:"state"`
+
 	FacilityName string `json:"facilityName"`
 	Provider     string `json:"provider"`
 	SavePath     string `json:"savePath"`

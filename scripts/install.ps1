@@ -73,6 +73,28 @@ if ($svcWasRunning) {
 Copy-Item -Force $ExePath $exe
 Write-Host "  Installed  $exe"
 
+# ── Tray companion (the agent's visible face) ────────────────────────────────
+# unitrise-gate-tray-windows-amd64.exe next to this script installs alongside
+# the agent and runs at login: a UnitRise icon by the clock showing sync
+# health, with the dashboard one click away. Optional - older release
+# bundles without it still install fine.
+$trayExe = Join-Path $dest "unitrise-gate-tray.exe"
+$traySrc = @("unitrise-gate-tray-windows-amd64.exe", "unitrise-gate-tray.exe") |
+    ForEach-Object { Join-Path (Split-Path -Parent $ExePath) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($traySrc) {
+    # A running tray holds its exe open - stop it for the copy.
+    Get-Process -Name "unitrise-gate-tray" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 300
+    Copy-Item -Force $traySrc $trayExe
+    # Run at login for every user of this machine (site PCs are shared).
+    $runKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+    Set-ItemProperty -Path $runKey -Name "UnitRiseGateBridgeTray" -Value "`"$trayExe`""
+    Start-Process -FilePath $trayExe
+    Write-Host "  Installed  $trayExe (tray icon, starts at login)"
+} else {
+    Write-Host "  Tray app not found beside the installer - skipping (download unitrise-gate-tray-windows-amd64.exe for the tray icon)." -ForegroundColor DarkGray
+}
+
 # ── System PATH (so `unitrise-gate` works in any admin console) ──────────────
 $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
 if ($machinePath -notlike "*$dest*") {

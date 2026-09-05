@@ -27,7 +27,9 @@ propagating**, which is why the console alarms on a stale heartbeat.
 ## Layout
 
 ```
-cmd/unitrise-gate/      the single binary (pair / test / run / force / ui / service)
+cmd/unitrise-gate/      the agent binary (pair / test / run / force / ui / service)
+cmd/unitrise-gate-tray/ the tray / menu-bar companion (the agent's visible face)
+internal/trayicon/      generated tray icons       → tools/gen-trayicons
 internal/api/           signed HTTP client        → docs/API_CONTRACT.md
 internal/config/        machine-scoped config.json (ProgramData / Library) + Windows ACLs
 internal/render/        vendor file renderers      → internal/render/README.md
@@ -44,21 +46,52 @@ scripts/                install.ps1 / uninstall.ps1 (Windows)
 
 ```
 make build          # host binary → dist/
-make release        # windows/amd64 (+ version resource) + darwin arm64/amd64
-                    #   + linux/amd64 + install scripts + SHA256SUMS → dist/
+make release        # agent: windows/amd64 (+ version resource) + darwin
+                    #   arm64/amd64 + linux/amd64; tray: windows/amd64
+                    #   (-H=windowsgui); + install scripts + SHA256SUMS → dist/
+make tray-darwin    # darwin tray builds (needs a Mac: the menu bar is
+                    #   cgo/Cocoa, so the ubuntu release runner can't cross-
+                    #   compile them - they ship with the Mac release pass)
 make test           # go vet + unit tests (template engine, config, lock)
 ```
 
-Pure Go, one tiny dependency (`golang.org/x/sys` for the Windows service,
-named-mutex lock, and config-dir ACLs). Binaries are static; nothing to
-install on the site machine but the exe. The Windows exe carries a proper
-version resource (ProductName "UnitRise Gate Bridge", version, company) so
-Explorer and Task Manager identify it.
+The agent is pure Go (`golang.org/x/sys` for the Windows service, named-mutex
+lock, and config-dir ACLs); the tray adds `fyne.io/systray`. Binaries are
+static; nothing to install on the site machine but the exes. The Windows exes
+carry a proper version resource (ProductName "UnitRise Gate Bridge", version,
+company) so Explorer and Task Manager identify them.
+
+## Setup mode + dashboard pairing
+
+An agent with no (valid) pairing no longer exits - it comes up in **setup
+mode**: the service stays healthy, the dashboard serves a pairing form, and
+the tray shows "Not connected yet" pointing at it. Credentials entered there
+are proven LIVE (API check + save-folder write probe - the same bar as
+`pair` + `test`) before anything is saved, then syncing starts without a
+restart. Re-pairing from a running dashboard works the same way and restarts
+the sync loop on the new credentials in place. The endpoint is guarded
+against hostile web pages (JSON-only so browsers preflight, Origin and Host
+pinned to loopback), and an unproven config is never written. CLI `pair`
+remains for scripted/admin installs.
+
+## The tray (why the agent isn't invisible)
+
+`unitrise-gate-tray` is the agent's visible face: a UnitRise hexagon by the
+clock (Windows) / in the menu bar (macOS) - amber when healthy, red when the
+agent reports a problem (the detail is right in the menu), gray when the
+service isn't running. The menu shows facility, code count, and last sync,
+with one-click **Open dashboard** and **Sync now**. It's a separate binary on
+purpose: the agent stays the headless audited sync core; the tray only reads
+the localhost status API (plus the dashboard's one harmless force action),
+and quitting the tray never touches the service. install.ps1 sets it to run
+at login for every user of the machine; agent self-update (`unitrise-gate
+update`) does NOT update the tray - it's a thin shell that rides reinstalls.
 
 ## Windows install (the normal path)
 
 From an **Administrator PowerShell** in the folder holding the downloaded
-`unitrise-gate-windows-amd64.exe` and `install.ps1`:
+`unitrise-gate-windows-amd64.exe`, `unitrise-gate-tray-windows-amd64.exe`,
+and `install.ps1`:
 
 ```
 powershell -ExecutionPolicy Bypass -File .\install.ps1
