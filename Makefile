@@ -21,6 +21,8 @@ winres:
 		-ver-major=$(VMAJOR) -ver-minor=$(VMINOR) -ver-patch=$(VPATCH) \
 		-product-ver-major=$(VMAJOR) -product-ver-minor=$(VMINOR) -product-ver-patch=$(VPATCH) \
 		-file-version=$(VERSION) -product-version=$(VERSION) -64 \
+		-icon=internal/trayicon/assets/app.ico \
+		-manifest=build/app.manifest \
 		-o cmd/unitrise-gate/resource_windows_amd64.syso versioninfo.json
 
 # Release checklist (the normal path is CI - .github/workflows/release.yml):

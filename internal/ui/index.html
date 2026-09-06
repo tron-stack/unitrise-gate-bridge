@@ -76,6 +76,14 @@
     <button class="pill ghost" onclick="location.reload()">Refresh</button>
   </div>
 
+  <!-- one-click self-update: shown only when the watcher found a newer agent -->
+  <div class="statusband" id="updateBand" style="display:none;border-color:var(--amber)">
+    <span class="dot" style="background:var(--amber);box-shadow:0 0 0 4px var(--amber-wash)"></span>
+    <div class="msg"><span>Agent update available: <span id="updVer"></span></span>
+      <small id="updMsg">Downloads, verifies the checksum, and restarts the agent - takes under a minute; the gate keeps admitting throughout.</small></div>
+    <button class="pill" id="updBtn">Install update</button>
+  </div>
+
   <!-- Pairing: the whole card in setup mode, a collapsed "Update credentials"
        panel once running. Same form, same /api/pair - credentials are proven
        LIVE (API + save-folder write) before anything is saved. -->
@@ -126,6 +134,28 @@
     </div>
   </div>
 
+  <!-- What the gate file currently carries. READ-ONLY on purpose: codes are
+       managed in the UnitRise console; this local page has no auth and must
+       hold no write power over access. -->
+  <div class="card logcard" id="rosterCard" style="display:none">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+      <h2 style="margin:0">Gate codes <span id="rosterCount" style="font-weight:400;text-transform:none;letter-spacing:0"></span></h2>
+      <input id="rosterQ" placeholder="Filter by unit, tenant, or code…" style="margin-left:auto;max-width:260px;padding:7px 12px;border:1px solid var(--line);border-radius:10px;font:13px/1.4 inherit;color:var(--ink);background:var(--card-soft)" />
+    </div>
+    <div style="max-height:300px;overflow:auto;border:1px solid var(--line);border-radius:12px">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.1em">
+          <th style="padding:8px 12px">Unit</th><th style="padding:8px 12px">Tenant</th><th style="padding:8px 12px">Code</th><th style="padding:8px 12px">Zone</th><th style="padding:8px 12px">Status</th>
+        </tr></thead>
+        <tbody id="rosterBody"></tbody>
+      </table>
+    </div>
+    <p style="margin:10px 0 0;color:var(--muted);font-size:11px">
+      This is what the gate file currently contains. Codes are added, suspended, and removed from the
+      property's UnitRise console - changes land here on the next sync.
+    </p>
+  </div>
+
   <div class="card logcard">
     <h2>Activity</h2>
     <div class="log" id="log">…</div>
@@ -167,6 +197,10 @@
         ? (s.lastHash ? "in sync · state " + s.lastHash.slice(0, 12) + "…" : "waiting for first sync")
         : (s.detail || "last cycle failed - see activity");
       $("forceBtn").style.display = setup ? "none" : "";
+      if (!updating) {
+        $("updateBand").style.display = !setup && s.updateAvailable ? "flex" : "none";
+        $("updVer").textContent = s.updateAvailable || "";
+      }
       const log = $("log");
       const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
       log.innerHTML = s.log.map((l) => l.startsWith("Error") ? '<span class="err">' + esc(l) + "</span>" : esc(l)).join("\n") || "…";
@@ -180,6 +214,30 @@
   $("forceBtn").onclick = async () => {
     $("forceBtn").disabled = true;
     try { await fetch("/api/force", { method: "POST" }); } finally { setTimeout(() => ($("forceBtn").disabled = false), 1500); }
+  };
+
+  let updating = false;
+  $("updBtn").onclick = async () => {
+    updating = true;
+    $("updBtn").disabled = true;
+    $("updMsg").textContent = "Downloading and verifying…";
+    try {
+      const r = await fetch("/api/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        $("updMsg").textContent = body.error || "Update failed - try again, or run `unitrise-gate update`.";
+        $("updBtn").disabled = false;
+        updating = false;
+        return;
+      }
+      // The agent restarts itself; the page goes briefly unreachable, then
+      // comes back on the new version.
+      $("updMsg").textContent = body.message || "Installed - restarting…";
+      setTimeout(() => location.reload(), 12000);
+    } catch {
+      $("updMsg").textContent = "The agent is restarting… this page will reconnect.";
+      setTimeout(() => location.reload(), 12000);
+    }
   };
 
   // ── pairing ────────────────────────────────────────────────────────────────
@@ -225,6 +283,37 @@
       $("pairBtn").disabled = false;
     }
   };
+
+  // ── gate codes roster ──────────────────────────────────────────────────────
+  let rosterRows = [];
+  function renderRoster() {
+    const q = $("rosterQ").value.trim().toLowerCase();
+    const rows = rosterRows.filter((r) =>
+      !q || (r.unit || "").toLowerCase().includes(q) || (r.tenant || "").toLowerCase().includes(q) || (r.code || "").includes(q));
+    $("rosterCount").textContent = q ? `(${rows.length} of ${rosterRows.length})` : `(${rosterRows.length})`;
+    $("rosterBody").innerHTML = rows.map((r) =>
+      `<tr style="border-top:1px solid var(--line)">
+        <td style="padding:7px 12px;font-weight:600">${esc(r.unit || "-")}</td>
+        <td style="padding:7px 12px">${esc(r.tenant || "-")}</td>
+        <td style="padding:7px 12px;font-family:ui-monospace,Menlo,Consolas,monospace">${esc(r.code || "")}</td>
+        <td style="padding:7px 12px">${esc(r.tz || "")}</td>
+        <td style="padding:7px 12px">${r.status === "suspended"
+          ? '<span class="chip" style="background:var(--danger-wash);color:var(--danger)">suspended</span>'
+          : '<span class="chip" style="background:var(--success-wash);color:#15803D">active</span>'}</td>
+      </tr>`).join("") ||
+      '<tr><td colspan="5" style="padding:14px 12px;color:var(--muted)">No codes yet - they appear after the first sync.</td></tr>';
+  }
+  $("rosterQ").oninput = renderRoster;
+  async function loadRoster() {
+    try {
+      const r = await fetch("/api/roster");
+      const d = await r.json();
+      rosterRows = d.rows || [];
+      $("rosterCard").style.display = rosterRows.length || $("rosterQ").value ? "" : "none";
+      renderRoster();
+    } catch { /* card keeps its last content */ }
+  }
+  loadRoster(); setInterval(loadRoster, 10000);
 
   tick(); setInterval(tick, 2000);
 </script>

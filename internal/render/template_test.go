@@ -1,6 +1,7 @@
 package render
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,8 +45,8 @@ func TestFullModeExactBytes(t *testing.T) {
 		// LineEnding unset → CRLF is the DEFAULT (DOS-lineage importers).
 	}
 	got := render(t, tState([]api.Credential{
-		{Code: "222222", UnitLabel: "Truck 42", TenantName: "M. Torres", Status: "active", TimeZoneGroup: 1},
-		{Code: "111111", UnitLabel: "Truck 7", TenantName: "A. Chen", Status: "active", TimeZoneGroup: 1},
+		{Code: "222222", UnitLabel: "Truck 42", TenantName: "M. Torres", Status: "active", TimeZoneGroup: "1"},
+		{Code: "111111", UnitLabel: "Truck 7", TenantName: "A. Chen", Status: "active", TimeZoneGroup: "1"},
 	}, spec, 0))
 	// Sorted by code, width6 truncates "Truck 42" → "Truck ", CRLF after EVERY
 	// line including the last.
@@ -95,7 +96,7 @@ func TestDeltaLifecycle(t *testing.T) {
 		SortBy:      "code",
 		LineEnding:  "lf",
 	}
-	active := api.Credential{Code: "5555", UnitLabel: "Truck 42", Status: "active", TimeZoneGroup: 1}
+	active := api.Credential{Code: "5555", UnitLabel: "Truck 42", Status: "active", TimeZoneGroup: "1"}
 
 	// First render: everything is an add.
 	got := render(t, tState([]api.Credential{active}, spec, 1))
@@ -160,5 +161,41 @@ func TestUnknownPlaceholderSurvivesLiterally(t *testing.T) {
 	got := render(t, tState([]api.Credential{{Code: "7", Status: "active"}}, spec, 0))
 	if !strings.Contains(got, "{bogus}") {
 		t.Fatalf("unknown placeholders must pass through visibly (never silently vanish): %q", got)
+	}
+}
+
+// Pinned against a real Falcon 2000 site's storEDGE update.old (2026-09-06):
+// space-separated, no commas, no "#" on units, the tenant's FULL name, and
+// the time-zone/access code is ALPHANUMERIC - "011A" for zone 1. The field
+// was an int end-to-end until that site proved otherwise.
+func TestFalconLayoutAlphanumericTimeZone(t *testing.T) {
+	st := &api.State{
+		Credentials: []api.Credential{
+			{Code: "482913", UnitLabel: "A14", TenantName: "Maria Torres", Status: "active", TimeZoneGroup: "011A"},
+		},
+	}
+	st.Settings.Format = &api.FormatSpec{Mode: "full", Line: "{unit} {code} {tenant} {tz}", LineEnding: "crlf", SortBy: "code"}
+	b, err := (templateRenderer{}).Render(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(b), "A14 482913 Maria Torres 011A\r\n"; got != want {
+		t.Fatalf("Falcon line = %q, want %q", got, want)
+	}
+}
+
+func TestFlexStringDecodesNumberAndString(t *testing.T) {
+	var c api.Credential
+	if err := json.Unmarshal([]byte(`{"code":"1","timeZoneGroup":1}`), &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.TimeZoneGroup != "1" {
+		t.Fatalf("numeric tz decoded to %q, want \"1\" (older backends send a number)", c.TimeZoneGroup)
+	}
+	if err := json.Unmarshal([]byte(`{"code":"1","timeZoneGroup":"011A"}`), &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.TimeZoneGroup != "011A" {
+		t.Fatalf("string tz decoded to %q, want \"011A\"", c.TimeZoneGroup)
 	}
 }

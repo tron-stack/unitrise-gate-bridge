@@ -89,7 +89,8 @@ type rosterEntry struct {
 	Unit   string `json:"unit"`
 	Tenant string `json:"tenant"`
 	Status string `json:"status"`
-	TZ     int    `json:"tz"`
+	// FlexString: rosters persisted before 2026-09-06 stored an int here.
+	TZ api.FlexString `json:"tz"`
 }
 
 type rosterFile struct {
@@ -287,7 +288,7 @@ func expand(tpl string, c *api.Credential, st *api.State, count int) string {
 			}
 		case "tz":
 			if c != nil {
-				v = strconv.Itoa(c.TimeZoneGroup)
+				v = string(c.TimeZoneGroup)
 			}
 		case "status":
 			if c != nil {

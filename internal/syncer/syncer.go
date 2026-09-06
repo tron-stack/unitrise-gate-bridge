@@ -215,6 +215,15 @@ func (s *Syncer) apply(st *api.State) error {
 		return fmt.Errorf("rename into place: %w", err)
 	}
 	s.log.Infof("wrote %s (%d bytes)", target, len(data))
+	// The "Gate codes" view: what the file now carries, per credential.
+	rows := make([]status.RosterRow, 0, len(st.Credentials))
+	for _, c := range st.Credentials {
+		rows = append(rows, status.RosterRow{
+			Unit: c.UnitLabel, Tenant: c.TenantName, Code: c.Code,
+			Status: c.Status, TZ: string(c.TimeZoneGroup),
+		})
+	}
+	status.SetRoster(rows)
 	// The file is the interface: now that it landed, remember what it told
 	// the gate (delta formats diff against this next cycle).
 	if err := render.CommitApplied(); err != nil {
@@ -230,6 +239,21 @@ func (s *Syncer) apply(st *api.State) error {
 		ConsumeOutput: out,
 	}); err != nil {
 		s.log.Errorf("report applied: %v", err)
+	}
+	// A configured consume command that fails IS a failed sync: the file
+	// landed, but the gate never got it (on-site 2026-09-06: a mistyped
+	// Ptisend.bat left the dashboard green "in sync" while the Falcon
+	// received nothing). -1 = no command configured; anything else nonzero
+	// turns the dashboard/tray red with the command's own output.
+	if exit != -1 && exit != 0 {
+		msg := fmt.Sprintf("consume command failed (exit %d)", exit)
+		if o := strings.TrimSpace(out); o != "" {
+			if len(o) > 300 {
+				o = o[:300] + "…"
+			}
+			msg += ": " + o
+		}
+		return fmt.Errorf("%s - the file was written but the gate software wasn't told; check the consume command name and try Force full update", msg)
 	}
 	return nil
 }

@@ -29,13 +29,39 @@ func New(cfg *config.Config) *Client {
 	return &Client{cfg: cfg, http: &http.Client{Timeout: 30 * time.Second}}
 }
 
+// FlexString decodes a JSON string OR a bare number into a string. The time
+// zone field was an int until 2026-09-06, when a real Falcon 2000 site showed
+// the field is actually PTI's combined zone/access code - alphanumeric, e.g.
+// "011A" for zone 1 (observed in storEDGE's update.old). Older backends still
+// send a number; both must decode.
+type FlexString string
+
+func (f *FlexString) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(string(b))
+	if s == "null" {
+		*f = ""
+		return nil
+	}
+	if len(s) >= 2 && s[0] == '"' {
+		var v string
+		if err := json.Unmarshal(b, &v); err != nil {
+			return err
+		}
+		*f = FlexString(v)
+		return nil
+	}
+	*f = FlexString(s) // bare number: its literal digits
+	return nil
+}
+
 // Credential is one gate code in the desired state.
 type Credential struct {
-	Code          string `json:"code"`
-	UnitLabel     string `json:"unitLabel"`
-	TenantName    string `json:"tenantName"`
-	Status        string `json:"status"` // active | suspended
-	TimeZoneGroup int    `json:"timeZoneGroup"`
+	Code       string `json:"code"`
+	UnitLabel  string `json:"unitLabel"`
+	TenantName string `json:"tenantName"`
+	Status     string `json:"status"` // active | suspended
+	// PTI-style time zone / access code. Alphanumeric ("011A"), NOT a number.
+	TimeZoneGroup FlexString `json:"timeZoneGroup"`
 }
 
 // FormatSpec is the server-editable vendor file template (contract
@@ -58,7 +84,7 @@ type FormatSpec struct {
 type StateSettings struct {
 	GeneratedFileName string      `json:"generatedFileName"`
 	ConsumeCommand    string      `json:"consumeCommand"`
-	DefaultTimeZone   int         `json:"defaultTimeZone"`
+	DefaultTimeZone   FlexString  `json:"defaultTimeZone"`
 	PollSeconds       int         `json:"pollSeconds"`
 	Format            *FormatSpec `json:"format"`
 }

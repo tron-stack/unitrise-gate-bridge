@@ -27,7 +27,7 @@ func (testFile) Render(st *api.State) ([]byte, error) {
 	fmt.Fprintf(&b, "Codes: %d\n\n", len(st.Credentials))
 	fmt.Fprintf(&b, "%-12s %-10s %-10s %-4s %s\n", "CODE", "UNIT", "STATUS", "TZ", "TENANT")
 	for _, c := range st.Credentials {
-		fmt.Fprintf(&b, "%-12s %-10s %-10s %-4d %s\n", c.Code, c.UnitLabel, c.Status, c.TimeZoneGroup, c.TenantName)
+		fmt.Fprintf(&b, "%-12s %-10s %-10s %-4s %s\n", c.Code, c.UnitLabel, c.Status, string(c.TimeZoneGroup), c.TenantName)
 	}
 	return b.Bytes(), nil
 }

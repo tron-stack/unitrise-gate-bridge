@@ -51,3 +51,6 @@ func Stop() error  { return exec.Command("launchctl", "stop", Name).Run() }
 
 // Installed is only meaningful on Windows (the built-in installer).
 func Installed() bool { return false }
+
+// Status is only meaningful on Windows (the control window's service bar).
+func Status() string { return "unknown" }

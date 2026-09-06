@@ -87,6 +87,22 @@ against hostile web pages (JSON-only so browsers preflight, Origin and Host
 pinned to loopback), and an unproven config is never written. CLI `pair`
 remains for scripted/admin installs.
 
+## The control window
+
+`unitrise-gate window` - the program's own app window (WebView2, cgo-free
+binding), launched by the tray's "Open Gate Bridge", the desktop/Start-Menu
+shortcut, or double-clicking the installed exe. It frames the local
+dashboard (status, activity, pairing, updates, and the read-only **Gate
+codes** roster with search) and adds the one thing the dashboard can't do:
+a service bar that **starts and stops the Windows service** (each action
+elevates via UAC; the window itself stays unelevated - the agent IS the
+service, so control has to live outside it). When the service is stopped
+the window shows an honest offline panel with a Start button instead of a
+dead page. The roster is read-only on purpose: the local page has no auth,
+so it holds no write power over access - codes are managed in the UnitRise
+console. No WebView2 runtime (rare) → falls back to the browser dashboard
+with an explanation. macOS gets this as a real .app in the Mac release pass.
+
 ## The tray (why the agent isn't invisible)
 
 `unitrise-gate tray` is the program's visible face: a UnitRise hexagon by

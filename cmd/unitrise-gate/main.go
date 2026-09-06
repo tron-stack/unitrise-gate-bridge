@@ -29,6 +29,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/api"
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/config"
@@ -63,7 +64,8 @@ Setup (on the gate computer - or just double-click the exe on Windows):
   service    install | uninstall | start | stop   (Windows service / launchd)
 
 Day to day:
-  ui         open the local dashboard (http://127.0.0.1:%d)
+  window     open the control window (status, codes, service start/stop)
+  ui         open the local dashboard in a browser (http://127.0.0.1:%d)
   tray       run the tray icon (installed to start at login on Windows)
   force      push one full update right now, then exit
   run        run in the foreground (the service runs this for you)
@@ -110,6 +112,8 @@ func main() {
 		err = serviceCmd()
 	case "tray":
 		err = trayCmd()
+	case "window":
+		err = windowCmd()
 	case "install":
 		err = installCmd()
 	case "uninstall":
@@ -230,12 +234,40 @@ func run(forceOnce bool) error {
 	// The dashboard serves across pairings: force routes to the CURRENT
 	// syncer, and a successful pair lands on pairCh to (re)start the loop.
 	var current atomic.Pointer[syncer.Syncer]
+	var currentCfg atomic.Pointer[config.Config]
 	pairCh := make(chan *config.Config, 1)
 	hooks := ui.Hooks{
 		OnForce: func() {
 			if s := current.Load(); s != nil {
 				s.ForceFullUpdate()
 			}
+		},
+		// One-click self-update from the dashboard/tray. After a successful
+		// swap the process exits nonzero ON PURPOSE: under the SCM (or
+		// launchd) the recovery actions relaunch it - onto the NEW binary.
+		OnUpdate: func() (string, error) {
+			c := currentCfg.Load()
+			if c == nil {
+				return "", fmt.Errorf("pair first - updates are fetched with the paired credentials")
+			}
+			client := api.New(c)
+			info, newer, err := update.CheckOnly(client)
+			if err != nil {
+				return "", err
+			}
+			if !newer {
+				return fmt.Sprintf("Up to date - running %s (latest published is %s).", api.AgentVersion, info.LatestVersion), nil
+			}
+			msg, err := update.SelfUpdate(client)
+			if err != nil {
+				return "", err
+			}
+			log.Infof("self-update installed %s - restarting the agent to run it", info.LatestVersion)
+			go func() {
+				time.Sleep(1500 * time.Millisecond)
+				os.Exit(1)
+			}()
+			return msg + " - the agent restarts onto the new version in a few seconds.", nil
 		},
 		OnPair: func(req ui.PairRequest) (ui.PairResult, error) {
 			res, newCfg, perr := pairFromDashboard(req, log)
@@ -281,6 +313,7 @@ func run(forceOnce bool) error {
 			status.Update(func(v *status.Snapshot) { v.Paired, v.State = true, "running" })
 			s := syncer.New(cfg, log)
 			current.Store(s)
+			currentCfg.Store(cfg)
 			cctx, cancel := context.WithCancel(ctx)
 			// Log when a newer agent is published (ctx-tied; retries hourly
 			// until the first successful check, then daily). LOG-ONLY - the

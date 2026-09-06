@@ -160,4 +160,17 @@ func main() {
 		}
 		fmt.Println("wrote", name+".ico", "+", name+".png")
 	}
+
+	// The application icon - embedded into the Windows exe by the version
+	// resource (Makefile winres -icon), so Explorer, the desktop shortcut,
+	// and Add/Remove Programs show the mark instead of the generic exe icon.
+	appSizes := map[int][]byte{}
+	order := []int{16, 24, 32, 48, 256}
+	for _, s := range order {
+		appSizes[s] = pngBytes(render(s, amber))
+	}
+	if err := os.WriteFile(filepath.Join(outDir, "app.ico"), ico(appSizes, order), 0o644); err != nil {
+		panic(err)
+	}
+	fmt.Println("wrote app.ico")
 }

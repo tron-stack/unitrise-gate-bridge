@@ -115,6 +115,36 @@ func Uninstall() error {
 func Start() error { return sc("start") }
 func Stop() error  { return sc("stop") }
 
+// Status answers "running" / "stopped" / "starting" / "not-installed" for the
+// control window's service bar. Querying needs no elevation (SCM grants
+// QUERY_STATUS to authenticated users by default).
+func Status() string {
+	m, err := mgr.Connect()
+	if err != nil {
+		return "unknown"
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(Name)
+	if err != nil {
+		return "not-installed"
+	}
+	defer s.Close()
+	st, err := s.Query()
+	if err != nil {
+		return "unknown"
+	}
+	switch st.State {
+	case svc.Running:
+		return "running"
+	case svc.StartPending:
+		return "starting"
+	case svc.StopPending:
+		return "stopping"
+	default:
+		return "stopped"
+	}
+}
+
 // Installed reports whether the service is registered (used by the built-in
 // installer to decide between fresh-install and update-in-place).
 func Installed() bool {

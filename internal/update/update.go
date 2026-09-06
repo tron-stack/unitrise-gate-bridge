@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/api"
+	"github.com/mytruckyards/unitrise-gate-bridge/internal/status"
 )
 
 // PlatformKey matches the server's DOWNLOAD_PLATFORMS map.
@@ -95,8 +96,14 @@ func Watch(ctx context.Context, client *api.Client, logf func(string, ...any)) {
 		if err == nil {
 			interval = 24 * time.Hour
 			if newer {
-				logf("agent %s is available (running %s) - run `unitrise-gate update` on this PC to take it", info.LatestVersion, api.AgentVersion)
+				logf("agent %s is available (running %s) - install it from the dashboard or tray, or run `unitrise-gate update`", info.LatestVersion, api.AgentVersion)
 			}
+			// Surface (or clear) the one-click update in the dashboard + tray.
+			v := ""
+			if newer {
+				v = info.LatestVersion
+			}
+			status.Update(func(s *status.Snapshot) { s.UpdateAvailable = v })
 		}
 		timer.Reset(interval)
 	}

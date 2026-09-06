@@ -17,6 +17,9 @@ type Snapshot struct {
 	// way in. State is "setup" or "running".
 	Paired bool   `json:"paired"`
 	State  string `json:"state"`
+	// Set by the update watcher when a newer agent is published - the
+	// dashboard and tray render a one-click "Install update" from it.
+	UpdateAvailable string `json:"updateAvailable"`
 
 	FacilityName string `json:"facilityName"`
 	Provider     string `json:"provider"`
@@ -38,11 +41,40 @@ type Snapshot struct {
 
 const ringSize = 250
 
+// RosterRow is one credential as last APPLIED to the gate file - what the
+// dashboard/window's "Gate codes" view lists. Kept out of Snapshot so
+// /api/status stays light; served on demand at /api/roster. Read-only by
+// design: codes are managed in the UnitRise console, never from the gate PC
+// (the local dashboard has no auth - it must hold no write powers over
+// access).
+type RosterRow struct {
+	Unit   string `json:"unit"`
+	Tenant string `json:"tenant"`
+	Code   string `json:"code"`
+	Status string `json:"status"`
+	TZ     string `json:"tz"`
+}
+
 var (
-	mu   sync.Mutex
-	snap Snapshot
-	ring []string
+	mu     sync.Mutex
+	snap   Snapshot
+	ring   []string
+	roster []RosterRow
 )
+
+// SetRoster replaces the applied-roster view (called by the syncer after the
+// vendor file lands).
+func SetRoster(rows []RosterRow) {
+	mu.Lock()
+	roster = rows
+	mu.Unlock()
+}
+
+func Roster() []RosterRow {
+	mu.Lock()
+	defer mu.Unlock()
+	return append([]RosterRow(nil), roster...)
+}
 
 func Init(agentVersion string) {
 	mu.Lock()

@@ -14,6 +14,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	"fyne.io/systray"
@@ -40,7 +43,8 @@ type traySnapshot struct {
 	Detail       string    `json:"detail"`
 	// Pointer: an older agent without the field decodes to nil, which must
 	// read as "paired" (it wouldn't be running otherwise on old builds).
-	Paired *bool `json:"paired"`
+	Paired          *bool  `json:"paired"`
+	UpdateAvailable string `json:"updateAvailable"`
 }
 
 var trayHTTP = &http.Client{Timeout: 2 * time.Second}
@@ -97,8 +101,10 @@ func trayReady() {
 	detailLine.Disable()
 	detailLine.Hide()
 	systray.AddSeparator()
-	openItem := systray.AddMenuItem("Open dashboard", "Status, activity, credentials")
+	openItem := systray.AddMenuItem("Open Gate Bridge", "Status, gate codes, activity, service control")
 	syncItem := systray.AddMenuItem("Sync now", "Push a full update to the gate software")
+	updateItem := systray.AddMenuItem("", "Download, verify, and restart onto the new version")
+	updateItem.Hide()
 	systray.AddSeparator()
 	verItem := systray.AddMenuItem("Version "+api.AgentVersion, "")
 	verItem.Disable()
@@ -124,6 +130,12 @@ func trayReady() {
 	for {
 		select {
 		case cur = <-states:
+			if cur.up && cur.snap.UpdateAvailable != "" {
+				updateItem.SetTitle("Install update " + cur.snap.UpdateAvailable)
+				updateItem.Show()
+			} else {
+				updateItem.Hide()
+			}
 			switch {
 			case !cur.up:
 				systray.SetIcon(trayicon.Off())
@@ -169,11 +181,11 @@ func trayReady() {
 				syncItem.Enable()
 			}
 		case <-openItem.ClickedCh:
-			base := cur.base
-			if base == "" {
-				base = fmt.Sprintf("http://127.0.0.1:%d", ui.DefaultPort)
+			// The control window (its own process; a second click focuses
+			// the existing window rather than spawning another).
+			if exe, err := os.Executable(); err == nil {
+				exec.Command(exe, "window").Start() //nolint:errcheck
 			}
-			openBrowser(base)
 		case <-syncItem.ClickedCh:
 			if cur.base != "" {
 				go func(base string) {
@@ -181,6 +193,19 @@ func trayReady() {
 					if err == nil {
 						resp.Body.Close()
 					}
+				}(cur.base)
+			}
+		case <-updateItem.ClickedCh:
+			if cur.base != "" {
+				updateItem.SetTitle("Installing update…")
+				go func(base string) {
+					// The guard wants JSON; a longer timeout - it downloads.
+					c := &http.Client{Timeout: 3 * time.Minute}
+					resp, err := c.Post(base+"/api/update", "application/json", strings.NewReader("{}"))
+					if err == nil {
+						resp.Body.Close()
+					}
+					// The agent restarts itself; the poller repaints state.
 				}(cur.base)
 			}
 		case <-quitItem.ClickedCh:

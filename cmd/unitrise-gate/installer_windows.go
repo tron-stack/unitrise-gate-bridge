@@ -15,6 +15,7 @@ package main
 // and the pairing is never touched.
 
 import (
+	_ "embed"
 	"fmt"
 	"io"
 	"os"
@@ -29,7 +30,6 @@ import (
 
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/api"
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/service"
-	"github.com/mytruckyards/unitrise-gate-bridge/internal/ui"
 )
 
 const (
@@ -98,35 +98,83 @@ func relaunchElevated(arg string) error {
 	return windows.ShellExecute(0, verb, file, args, nil, windows.SW_NORMAL)
 }
 
-// guiEntry is the double-click path (GUI subsystem, no console, no args).
+// guiEntry is the double-click path (GUI subsystem, no console, no args):
+// the native setup dialog (options + staged progress), never a terminal.
 func guiEntry() {
 	exe, _ := os.Executable()
 	if strings.EqualFold(exe, installedExe()) || service.Installed() {
-		// Already installed: the program's face is the tray + dashboard.
-		openBrowser(fmt.Sprintf("http://127.0.0.1:%d", ui.DefaultPort))
+		// Already installed: double-click opens the control window.
+		windowCmd() //nolint:errcheck - falls back to the browser internally
 		return
 	}
-	if msgBox("Install UnitRise Gate Bridge on this computer?\n\nIt runs as a background service that keeps your gate software's code list in sync with UnitRise, with a status icon by the clock. You'll enter your pairing credentials on the setup page that opens after install.", mbYesNo|mbIconQuestion) != idYes {
+	proceed, opts := setupDialog()
+	if !proceed {
 		return
 	}
 	if !isElevated() {
-		if err := relaunchElevated("install"); err != nil {
+		// The elevated leg re-enters through `install --gui` carrying the
+		// choices; UAC is the only prompt between the dialog and progress.
+		if err := relaunchElevated(installArgs(opts)); err != nil {
 			report("Couldn't request administrator rights: "+err.Error(), true)
 		}
 		return
 	}
-	installCmd() //nolint:errcheck - installCmd reports its own outcome
+	runGuiInstall(opts)
 }
 
-// installCmd installs (or updates) in place. Self-elevates when needed.
+func installArgs(opts installOpts) string {
+	args := "install --gui"
+	if opts.DesktopShortcut {
+		args += " --shortcut"
+	}
+	if opts.OpenGuide {
+		args += " --guide"
+	}
+	return args
+}
+
+// runGuiInstall: staged progress window around the real work, then the
+// after-party (guide, dashboard, confirmation).
+func runGuiInstall(opts installOpts) {
+	err := progressDialog(func(rep func(int, string)) error {
+		return installSelf(opts, rep)
+	})
+	if err != nil {
+		return // progressDialog already showed the error box
+	}
+	if opts.OpenGuide {
+		exec.Command("notepad", filepath.Join(installDir(), "README.txt")).Start() //nolint:errcheck
+	}
+	msgBox("UnitRise Gate Bridge is installed and running.\n\nLook for the UnitRise icon by the clock - the setup page that just opened walks you through connecting (or shows live status if this machine was already paired).", mbOK|mbIconInfo)
+}
+
+// installCmd installs (or updates) in place. Self-elevates when needed;
+// flags (--gui --shortcut --guide) carry the dialog's choices across the
+// UAC relaunch.
 func installCmd() error {
+	opts := installOpts{}
+	gui := false
+	for _, a := range os.Args[2:] {
+		switch a {
+		case "--gui":
+			gui = true
+		case "--shortcut":
+			opts.DesktopShortcut = true
+		case "--guide":
+			opts.OpenGuide = true
+		}
+	}
 	if !isElevated() {
 		if !hasConsole {
-			return relaunchElevated("install")
+			return relaunchElevated(installArgs(opts))
 		}
 		return fmt.Errorf("install needs an Administrator terminal (or just double-click the exe)")
 	}
-	if err := installSelf(); err != nil {
+	if gui && !hasConsole {
+		runGuiInstall(opts)
+		return nil
+	}
+	if err := installSelf(opts, func(pct int, msg string) { fmt.Printf("  [%3d%%] %s\n", pct, msg) }); err != nil {
 		report("Install failed: "+err.Error(), true)
 		return errQuiet
 	}
@@ -138,7 +186,43 @@ func installCmd() error {
 // must not double-print it.
 var errQuiet = fmt.Errorf("")
 
-func installSelf() error {
+//go:embed readme_operator.txt
+var operatorReadme []byte
+
+func desktopShortcutPath() string {
+	pub := os.Getenv("PUBLIC")
+	if pub == "" {
+		pub = `C:\Users\Public`
+	}
+	return filepath.Join(pub, "Desktop", "UnitRise Gate Bridge.lnk")
+}
+
+func startMenuShortcutPath() string {
+	pd := os.Getenv("ProgramData")
+	if pd == "" {
+		pd = `C:\ProgramData`
+	}
+	return filepath.Join(pd, `Microsoft\Windows\Start Menu\Programs`, "UnitRise Gate Bridge.lnk")
+}
+
+// createShortcut writes a .lnk via WScript.Shell - the one COM dance not
+// worth hand-rolling ole32 syscalls for. PowerShell is on every supported
+// Windows; failure is a warning, never a failed install.
+func createShortcut(lnkPath, target, desc string) error {
+	script := fmt.Sprintf(
+		"$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%s'); $s.TargetPath = '%s'; $s.WorkingDirectory = '%s'; $s.Description = '%s'; $s.Save()",
+		lnkPath, target, filepath.Dir(target), desc)
+	out, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func installSelf(opts installOpts, report func(pct int, msg string)) error {
+	if report == nil {
+		report = func(int, string) {}
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return err
@@ -146,12 +230,14 @@ func installSelf() error {
 	dest := installedExe()
 
 	// An update needs the exe unlocked: stop the service, close any trays.
+	report(8, "Preparing (stopping any running copy)…")
 	wasInstalled := service.Installed()
 	if wasInstalled {
 		_ = service.Stop()
 	}
 	killOtherInstances()
 
+	report(30, "Copying program files…")
 	if err := os.MkdirAll(installDir(), 0o755); err != nil {
 		return err
 	}
@@ -160,12 +246,14 @@ func installSelf() error {
 			return fmt.Errorf("copying into %s: %w", installDir(), err)
 		}
 	}
-
+	// The operator quick-start, and the target of "Open the guide when done".
+	os.WriteFile(filepath.Join(installDir(), "README.txt"), operatorReadme, 0o644) //nolint:errcheck
 	if err := addMachinePath(installDir()); err != nil {
 		// PATH is a convenience - never fail the install over it.
 		fmt.Fprintln(os.Stderr, "warning: PATH:", err)
 	}
 
+	report(52, "Registering the background service…")
 	if !wasInstalled {
 		// Register via the INSTALLED copy - the service must point at
 		// Program Files, not at wherever the installer was downloaded.
@@ -173,32 +261,45 @@ func installSelf() error {
 			return fmt.Errorf("service install: %v (%s)", err, strings.TrimSpace(string(out)))
 		}
 	}
+
+	report(70, "Starting the service and status icon…")
 	if err := service.Start(); err != nil {
 		return fmt.Errorf("service start: %w", err)
 	}
-
 	// Tray at login, for every user of this shared site PC.
 	if k, err := registry.OpenKey(registry.LOCAL_MACHINE, runKeyPath, registry.SET_VALUE); err == nil {
 		k.SetStringValue(trayRunValue, `"`+dest+`" tray`) //nolint:errcheck
 		k.Close()
 	}
+	exec.Command(dest, "tray").Start() //nolint:errcheck - best-effort; login launches it anyway
+
+	report(86, "Creating shortcuts…")
+	// Start Menu always - it's how Windows software says "I'm installed".
+	if err := createShortcut(startMenuShortcutPath(), dest, "UnitRise Gate Bridge - gate code sync status"); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: start-menu shortcut:", err)
+	}
+	if opts.DesktopShortcut {
+		if err := createShortcut(desktopShortcutPath(), dest, "UnitRise Gate Bridge - gate code sync status"); err != nil {
+			fmt.Fprintln(os.Stderr, "warning: desktop shortcut:", err)
+		}
+	}
+
+	report(94, "Finishing…")
 	// Add/Remove Programs entry, so the machine's software inventory is
 	// honest and removal is a normal Windows act.
 	if k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, arpKeyPath, registry.SET_VALUE); err == nil {
-		k.SetStringValue("DisplayName", "UnitRise Gate Bridge")   //nolint:errcheck
-		k.SetStringValue("DisplayVersion", api.AgentVersion)      //nolint:errcheck
-		k.SetStringValue("Publisher", "MyTruckYards LLC")         //nolint:errcheck
-		k.SetStringValue("DisplayIcon", dest)                     //nolint:errcheck
-		k.SetStringValue("InstallLocation", installDir())         //nolint:errcheck
+		k.SetStringValue("DisplayName", "UnitRise Gate Bridge")     //nolint:errcheck
+		k.SetStringValue("DisplayVersion", api.AgentVersion)        //nolint:errcheck
+		k.SetStringValue("Publisher", "MyTruckYards LLC")           //nolint:errcheck
+		k.SetStringValue("DisplayIcon", dest)                       //nolint:errcheck
+		k.SetStringValue("InstallLocation", installDir())           //nolint:errcheck
 		k.SetStringValue("UninstallString", `"`+dest+`" uninstall`) //nolint:errcheck
-		k.SetDWordValue("NoModify", 1)                            //nolint:errcheck
-		k.SetDWordValue("NoRepair", 1)                            //nolint:errcheck
+		k.SetDWordValue("NoModify", 1)                              //nolint:errcheck
+		k.SetDWordValue("NoRepair", 1)                              //nolint:errcheck
 		k.Close()
 	}
-
-	exec.Command(dest, "tray").Start() //nolint:errcheck - best-effort; login launches it anyway
-	// The dashboard is where setup continues (pairing form when unpaired).
-	openBrowser(fmt.Sprintf("http://127.0.0.1:%d", ui.DefaultPort))
+	// Setup continues in the control window (pairing form when unpaired).
+	exec.Command(dest, "window").Start() //nolint:errcheck
 	return nil
 }
 
@@ -221,6 +322,8 @@ func uninstallCmd() error {
 	}
 	registry.DeleteKey(registry.LOCAL_MACHINE, arpKeyPath) //nolint:errcheck
 	removeMachinePath(installDir())
+	os.Remove(desktopShortcutPath())   //nolint:errcheck
+	os.Remove(startMenuShortcutPath()) //nolint:errcheck
 
 	// The running exe can't delete itself - hand the directory removal to a
 	// detached cmd that waits for this process to exit first.

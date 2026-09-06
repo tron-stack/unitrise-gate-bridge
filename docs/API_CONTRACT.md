@@ -45,7 +45,7 @@ Headers: signing headers + optional `If-None-Match: "<stateHash>"`.
   "settings": {
     "generatedFileName": "UPDATE.DAT",
     "consumeCommand": "Ptisend.bat",
-    "defaultTimeZone": 1,
+    "defaultTimeZone": "011A",
     "pollSeconds": 300,
     "format": {
       "preset": "pti_falcon",
@@ -68,7 +68,7 @@ Headers: signing headers + optional `If-None-Match: "<stateHash>"`.
       "unitLabel": "A-14",
       "tenantName": "M. Torres",
       "status": "active",          // active | suspended  (revoked codes are ABSENT)
-      "timeZoneGroup": 1
+      "timeZoneGroup": "011A"
     }
   ]
 }
@@ -89,7 +89,7 @@ Placeholders, usable in every template string:
 
 | Placeholder | Meaning |
 |---|---|
-| `{code}` `{unit}` `{tenant}` `{tz}` `{status}` | per-credential fields |
+| `{code}` `{unit}` `{tenant}` `{tz}` `{status}` | per-credential fields; `{tz}` is an alphanumeric zone/access STRING (e.g. PTI "011A" - was an int before 2026-09-06; agents decode both) |
 | `{facility}` `{date}` `{time}` `{count}` | file-level (header/footer; count = credential lines emitted) |
 | `{code:pad10}` | zero-pad left to width |
 | `{tenant:width20}` | space-pad right + truncate |

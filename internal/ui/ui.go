@@ -45,6 +45,10 @@ type PairResult struct {
 type Hooks struct {
 	OnForce func()
 	OnPair  func(PairRequest) (PairResult, error)
+	// OnUpdate downloads + installs the latest published agent (checksum-
+	// verified) and, when running as a service, restarts onto it. Returns a
+	// human summary line.
+	OnUpdate func() (string, error)
 }
 
 // localBrowserGuard blocks the two ways a hostile web page could reach a
@@ -95,6 +99,14 @@ func Serve(port int, hooks Hooks) (string, error) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(status.Get())
 	})
+	mux.HandleFunc("/api/roster", func(w http.ResponseWriter, r *http.Request) {
+		rows := status.Roster()
+		if rows == nil {
+			rows = []status.RosterRow{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"rows": rows})
+	})
 	mux.HandleFunc("/api/force", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -102,6 +114,25 @@ func Serve(port int, hooks Hooks) (string, error) {
 		}
 		hooks.OnForce()
 		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/api/update", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		// Same browser guards as pairing: installing a binary is not an
+		// action a hostile web page gets to trigger.
+		if !localBrowserGuard(w, r) {
+			return
+		}
+		msg, err := hooks.OnUpdate()
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"message": msg})
 	})
 	mux.HandleFunc("/api/pair", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
