@@ -232,6 +232,17 @@ func (s *Syncer) apply(st *api.State) error {
 	status.Update(func(v *status.Snapshot) { v.TargetFile = target })
 
 	exit, out := s.consume(st)
+	status.Update(func(v *status.Snapshot) {
+		v.ConsumeExit = exit
+		if exit != -1 {
+			v.ConsumeRanAt = time.Now()
+		}
+		note := strings.TrimSpace(out)
+		if len(note) > 240 {
+			note = note[:240] + "…"
+		}
+		v.ConsumeNote = note
+	})
 	if err := s.client.ReportApplied(api.Applied{
 		StateHash:     st.StateHash,
 		WroteFile:     target,

@@ -129,6 +129,7 @@
         <dt>Folder</dt><dd id="savePath">-</dd>
         <dt>File</dt><dd id="targetFile">-</dd>
         <dt>Consume</dt><dd id="consume">-</dd>
+        <dt>Consume result</dt><dd id="consumeResult">-</dd>
         <dt>Last apply</dt><dd id="lastApply">-</dd>
       </dl>
     </div>
@@ -179,6 +180,22 @@
       $("savePath").textContent = s.savePath || "-";
       $("targetFile").textContent = s.targetFile || "-";
       $("consume").textContent = s.consumeCmd || "(none)";
+      // The consume verdict is where "file written but the gate never got
+      // it" shows itself - keep it visible, not just in the log.
+      const cr = $("consumeResult");
+      if (!s.consumeCmd) {
+        cr.textContent = "(no command - the gate software watches the folder itself)";
+        cr.style.color = "";
+      } else if (s.consumeExit === -1 || !s.consumeRanAt || new Date(s.consumeRanAt).getFullYear() < 2000) {
+        cr.textContent = "not run yet";
+        cr.style.color = "";
+      } else if (s.consumeExit === 0) {
+        cr.textContent = "OK (exit 0) · " + fmtT(s.consumeRanAt);
+        cr.style.color = "#15803D";
+      } else {
+        cr.textContent = "FAILED (exit " + s.consumeExit + ") · " + fmtT(s.consumeRanAt) + (s.consumeNote ? " · " + s.consumeNote : "");
+        cr.style.color = "var(--danger)";
+      }
       $("lastApply").textContent = fmtT(s.lastApplyAt);
       // Setup mode: the pairing card IS the page until credentials prove out.
       const setup = s.paired === false;

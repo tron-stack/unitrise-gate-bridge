@@ -290,7 +290,7 @@ func installSelf(opts installOpts, report func(pct int, msg string)) error {
 	if k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, arpKeyPath, registry.SET_VALUE); err == nil {
 		k.SetStringValue("DisplayName", "UnitRise Gate Bridge")     //nolint:errcheck
 		k.SetStringValue("DisplayVersion", api.AgentVersion)        //nolint:errcheck
-		k.SetStringValue("Publisher", "MyTruckYards LLC")           //nolint:errcheck
+		k.SetStringValue("Publisher", "UnitRise")                   //nolint:errcheck
 		k.SetStringValue("DisplayIcon", dest)                       //nolint:errcheck
 		k.SetStringValue("InstallLocation", installDir())           //nolint:errcheck
 		k.SetStringValue("UninstallString", `"`+dest+`" uninstall`) //nolint:errcheck

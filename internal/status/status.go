@@ -29,9 +29,16 @@ type Snapshot struct {
 
 	CodeCount   int       `json:"codeCount"`
 	LastApplyAt time.Time `json:"lastApplyAt"`
-	LastHash    string    `json:"lastHash"`
-	PollSeconds int       `json:"pollSeconds"`
-	NextPollAt  time.Time `json:"nextPollAt"`
+	// The consume command's last verdict - the exact place a "file written
+	// but the Falcon never got it" site failure shows itself (2026-09-06).
+	// ConsumeExit: -1 = no command configured, -2 = failed to start,
+	// otherwise the process exit code. ConsumeNote carries the output tail.
+	ConsumeExit  int       `json:"consumeExit"`
+	ConsumeRanAt time.Time `json:"consumeRanAt"`
+	ConsumeNote  string    `json:"consumeNote"`
+	LastHash     string    `json:"lastHash"`
+	PollSeconds  int       `json:"pollSeconds"`
+	NextPollAt   time.Time `json:"nextPollAt"`
 
 	OK     bool   `json:"ok"`
 	Detail string `json:"detail"`

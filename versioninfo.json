@@ -10,11 +10,11 @@
   },
   "StringFileInfo": {
     "Comments": "Syncs gate access codes from UnitRise to the on-site gate software.",
-    "CompanyName": "MyTruckYards LLC",
+    "CompanyName": "UnitRise",
     "FileDescription": "UnitRise Gate Bridge",
     "FileVersion": "0.4.0",
     "InternalName": "unitrise-gate",
-    "LegalCopyright": "© MyTruckYards LLC",
+    "LegalCopyright": "© UnitRise (Vairyn)",
     "OriginalFilename": "unitrise-gate.exe",
     "ProductName": "UnitRise Gate Bridge",
     "ProductVersion": "0.4.0"

@@ -2,23 +2,23 @@
 
 package main
 
-// The desktop control window - the Gate Bridge's own app window (user ask
-// 2026-09-06: "I don't want it to live in the browser"). A WebView2 shell
-// (cgo-free binding, so the ubuntu release runner keeps cross-compiling)
-// around a tiny local shell page that:
+// The desktop control window - the Gate Bridge's own app window. A WebView2
+// shell (cgo-free binding, so the ubuntu release runner keeps
+// cross-compiling) that navigates DIRECTLY to the agent's dashboard through
+// a local same-origin reverse proxy - no iframe, no embedding layer at all
+// (two real-Windows rounds showed embedded frames not rendering,
+// 2026-09-06). What makes it an app and not a browser tab:
 //
-//   - embeds the agent's dashboard (status, activity, gate-codes roster,
-//     pairing, updates) when the agent is up,
-//   - shows an honest offline panel when it isn't - which is exactly when
-//     the window's native powers matter: a service-control bar that can
-//     START and STOP the Windows service (each action elevates via UAC;
-//     the window itself stays unelevated).
+//   - a service-control bar INJECTED into every page (webview Init script):
+//     live service state plus Start/Stop, each elevating via UAC while the
+//     window stays unelevated - the agent IS the service and can't start
+//     itself, so control lives in this process;
+//   - when the agent is down, the proxy serves a self-recovering offline
+//     panel instead of a browser error, and the bar keeps working - which
+//     is exactly when Start matters.
 //
-// The shell page is served by THIS process on its own loopback port; the
-// service-control endpoints live here, not on the agent - the agent IS the
-// service and can't start itself. If the WebView2 runtime is missing
-// (rare - it ships with Windows 10/11), the window falls back to the
-// browser dashboard with an explanation.
+// If the WebView2 runtime is missing (rare - it ships with Windows 10/11),
+// the window falls back to the browser dashboard with an explanation.
 
 import (
 	"encoding/json"
@@ -71,18 +71,15 @@ func shellGuard(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// serveShell starts the window's own loopback server and returns its URL.
-// Layout: /shell/* is the window's own surface (frame page, service
-// control); EVERYTHING else reverse-proxies to the agent's dashboard, so
-// the embedded dashboard is SAME-ORIGIN with the shell - no cross-origin
-// iframe behavior to trust (first real-Windows run showed the dashboard not
-// rendering inside the frame, 2026-09-06).
+// serveShell starts the window's loopback server: /shell/* is the window's
+// own control surface; everything else reverse-proxies to the agent, so the
+// dashboard IS this origin's content. Agent down = the offline panel.
 func serveShell() (string, error) {
 	proxy := &httputil.ReverseProxy{
 		Director: func(r *http.Request) {
 			port := findAgentPort()
 			if port == 0 {
-				port = ui.DefaultPort // proxy will 502; the shell hides the frame anyway
+				port = ui.DefaultPort // ErrorHandler will serve the offline panel
 			}
 			r.URL.Scheme = "http"
 			r.URL.Host = fmt.Sprintf("127.0.0.1:%d", port)
@@ -90,20 +87,18 @@ func serveShell() (string, error) {
 			r.Host = r.URL.Host
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			w.WriteHeader(http.StatusBadGateway)
-			w.Write([]byte("agent not reachable")) //nolint:errcheck
+			// API calls from a still-loaded dashboard get a plain error;
+			// page navigations get the offline panel.
+			if strings.HasPrefix(r.URL.Path, "/api/") {
+				http.Error(w, "agent not reachable", http.StatusBadGateway)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte(offlinePage)) //nolint:errcheck
 		},
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/", proxy)
-	mux.HandleFunc("/shell/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/shell/" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(shellPage)) //nolint:errcheck
-	})
 	mux.HandleFunc("/shell/state", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
@@ -167,7 +162,7 @@ func windowCmd() error {
 		WindowOptions: webview2.WindowOptions{
 			Title:  windowTitle,
 			Width:  1010,
-			Height: 760,
+			Height: 780,
 			IconId: 1, // the exe's embedded hexagon (winres -icon)
 			Center: true,
 		},
@@ -179,117 +174,110 @@ func windowCmd() error {
 		return nil
 	}
 	defer w.Destroy()
-	w.Navigate(shellURL + "/shell/")
+	// The service bar rides EVERY page this window shows (dashboard and
+	// offline panel alike) - injected at document creation.
+	w.Init(strings.ReplaceAll(barScript, "__SHELL_ORIGIN__", shellURL))
+	w.Navigate(shellURL + "/")
 	w.Run()
 	return nil
 }
 
-// The shell page: a slim Rise-styled frame - the agent dashboard fills it
-// when up; a service bar at the bottom is always present.
-const shellPage = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"/>
-<title>UnitRise Gate Bridge</title>
-<style>
-  :root{--paper:#FAF8F5;--card:#FFFFFF;--line:#E9E5DC;--ink:#111322;--body:#4B4E63;--muted:#8A8DA3;
-        --amber:#F59E0B;--indigo:#1E1B4B;--success:#22C55E;--danger:#EF4444}
-  *{box-sizing:border-box} html,body{margin:0;height:100%}
-  body{display:flex;flex-direction:column;background:var(--paper);font:14px/1.5 "Segoe UI",-apple-system,sans-serif;color:var(--ink)}
-  #frame{flex:1;border:0;width:100%;display:none}
-  #offline{flex:1;display:flex;align-items:center;justify-content:center}
-  .panel{max-width:440px;text-align:center;padding:32px;background:var(--card);border:1px solid var(--line);border-radius:16px}
-  .panel h1{font-size:19px;margin:0 0 8px;font-weight:700}
-  .panel p{color:var(--body);margin:0 0 18px}
-  .hex{width:44px;height:44px;margin-bottom:12px}
-  #bar{display:flex;align-items:center;gap:10px;padding:9px 16px;border-top:1px solid var(--line);background:var(--card);font-size:12.5px}
-  .dot{width:9px;height:9px;border-radius:99px;background:var(--muted);flex:none}
-  .dot.on{background:var(--success)} .dot.off{background:var(--danger)} .dot.mid{background:var(--amber)}
-  #svcText{color:var(--body);font-weight:600}
-  button{appearance:none;border:0;cursor:pointer;border-radius:999px;padding:7px 16px;font-weight:700;font-size:12.5px;
-         background:var(--amber);color:var(--indigo)}
-  button.ghost{background:var(--card);color:var(--ink);border:1px solid var(--line)}
-  button:disabled{opacity:.5;cursor:default}
-  #hint{color:var(--muted);margin-left:auto}
-</style></head>
-<body>
-  <iframe id="frame" title="Gate Bridge dashboard"></iframe>
-  <div id="offline"><div class="panel">
-    <svg class="hex" viewBox="0 0 100 100" aria-hidden="true"><polygon points="50,4 92,27 92,73 50,96 8,73 8,27" fill="none" stroke="#111322" stroke-width="5"/><polygon points="50,22 76,36 76,64 50,78 24,64 24,36" fill="#F59E0B"/></svg>
-    <h1 id="offTitle">Looking for the sync service…</h1>
-    <p id="offBody">One moment.</p>
-    <button id="offStart" style="display:none">Start the service</button>
-  </div></div>
-  <div id="bar">
-    <span class="dot" id="svcDot"></span><span id="svcText">Checking service…</span>
-    <button class="ghost" id="svcBtn" style="display:none"></button>
-    <span id="hint"></span>
-  </div>
-<script>
-  const $ = (id) => document.getElementById(id);
-  let agentPort = 0, svc = "unknown", busyUntil = 0;
-
-  async function act(verb) {
-    busyUntil = Date.now() + 8000; // give the UAC prompt + SCM a beat
-    $("svcBtn").disabled = true; $("offStart").disabled = true;
-    try { await fetch("/shell/" + verb, { method: "POST" }); } catch {}
+// barScript is injected into every document: the persistent service bar +
+// the up/down navigation logic (dashboard when the agent answers, offline
+// panel when it doesn't).
+const barScript = `
+(function () {
+  if (location.origin !== "__SHELL_ORIGIN__") return; // never decorate foreign pages
+  var misses = 0;
+  function ready(fn) {
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", fn);
+    else fn();
   }
-  $("offStart").onclick = () => act("start");
-  $("svcBtn").onclick = () => act($("svcBtn").dataset.verb);
+  ready(function () {
+    var bar = document.createElement("div");
+    bar.id = "urShellBar";
+    bar.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:2147483647;display:flex;align-items:center;gap:10px;" +
+      "padding:9px 16px;border-top:1px solid #E9E5DC;background:#FFFFFF;font:12.5px/1.4 'Segoe UI',sans-serif;color:#4B4E63";
+    bar.innerHTML =
+      '<span id="urSvcDot" style="width:9px;height:9px;border-radius:99px;background:#8A8DA3;flex:none"></span>' +
+      '<span id="urSvcText" style="font-weight:600">Checking service…</span>' +
+      '<button id="urSvcBtn" style="display:none;appearance:none;cursor:pointer;border-radius:999px;padding:6px 15px;font-weight:700;' +
+      'font-size:12.5px;background:#FFFFFF;color:#111322;border:1px solid #E9E5DC"></button>' +
+      '<span id="urSvcHint" style="margin-left:auto;color:#8A8DA3"></span>';
+    document.body.appendChild(bar);
+    document.body.style.paddingBottom = "52px";
 
-  function paint() {
-    const busy = Date.now() < busyUntil;
-    const up = agentPort > 0;
-    // main area
-    if (up) {
-      // Reload on every down->up transition (and port change): the frame may
-      // hold a stale 502 from when the agent was down.
-      const key = String(agentPort);
-      if ($("frame").dataset.key !== key) { $("frame").src = "/?t=" + Date.now(); $("frame").dataset.key = key; }
-      $("frame").style.display = ""; $("offline").style.display = "none";
-    } else {
-      $("frame").dataset.key = "";
-      $("frame").style.display = "none"; $("offline").style.display = "flex";
-      if (svc === "running" || svc === "starting" || busy) {
-        $("offTitle").textContent = "Starting up…";
-        $("offBody").textContent = "The sync service is coming online.";
-        $("offStart").style.display = "none";
+    var busyUntil = 0;
+    var btn = document.getElementById("urSvcBtn");
+    btn.onclick = function () {
+      busyUntil = Date.now() + 8000; // give UAC + the SCM a beat
+      btn.disabled = true;
+      fetch("/shell/" + btn.dataset.verb, { method: "POST" }).catch(function () {});
+    };
+
+    function paint(svc, agentPort) {
+      var busy = Date.now() < busyUntil;
+      var dot = document.getElementById("urSvcDot");
+      var txt = document.getElementById("urSvcText");
+      var hint = document.getElementById("urSvcHint");
+      btn.disabled = busy;
+      if (svc === "running") {
+        dot.style.background = "#22C55E";
+        txt.textContent = agentPort ? "Service running" : "Service running - agent coming online…";
+        btn.style.display = ""; btn.textContent = "Stop service"; btn.dataset.verb = "stop";
+        hint.textContent = "Stopping pauses code sync - the gate keeps its current list.";
+      } else if (svc === "starting" || svc === "stopping" || busy) {
+        dot.style.background = "#F59E0B";
+        txt.textContent = busy ? "Working… (allow the administrator prompt)" : "Service " + svc + "…";
+        btn.style.display = "none"; hint.textContent = "";
       } else if (svc === "not-installed") {
-        $("offTitle").textContent = "The service isn't installed";
-        $("offBody").textContent = "Run the Gate Bridge installer again to repair this machine.";
-        $("offStart").style.display = "none";
+        dot.style.background = "#EF4444";
+        txt.textContent = "Service not installed - run the installer again";
+        btn.style.display = "none"; hint.textContent = "";
       } else {
-        $("offTitle").textContent = "The sync service is stopped";
-        $("offBody").textContent = "Gate codes aren't syncing while it's stopped - the gate keeps admitting from its last list.";
-        $("offStart").style.display = ""; $("offStart").disabled = busy;
+        dot.style.background = "#EF4444";
+        txt.textContent = "Service stopped - gate codes are not syncing";
+        btn.style.display = ""; btn.textContent = "Start service"; btn.dataset.verb = "start";
+        hint.textContent = "";
       }
     }
-    // service bar
-    const dot = $("svcDot"), txt = $("svcText"), btn = $("svcBtn");
-    btn.disabled = busy;
-    if (svc === "running") {
-      dot.className = "dot on"; txt.textContent = "Service running";
-      btn.style.display = ""; btn.textContent = "Stop service"; btn.dataset.verb = "stop";
-      $("hint").textContent = "Stopping pauses code sync - the gate keeps its current list.";
-    } else if (svc === "starting" || svc === "stopping" || busy) {
-      dot.className = "dot mid"; txt.textContent = busy ? "Working… (allow the administrator prompt)" : "Service " + svc + "…";
-      btn.style.display = "none"; $("hint").textContent = "";
-    } else if (svc === "not-installed") {
-      dot.className = "dot off"; txt.textContent = "Service not installed";
-      btn.style.display = "none"; $("hint").textContent = "";
-    } else {
-      dot.className = "dot off"; txt.textContent = "Service stopped";
-      btn.style.display = ""; btn.textContent = "Start service"; btn.dataset.verb = "start";
-      $("hint").textContent = "";
-    }
-  }
 
-  async function tick() {
-    try {
-      const r = await fetch("/shell/state");
-      const d = await r.json();
-      svc = d.service; agentPort = d.agentPort;
-    } catch { svc = "unknown"; agentPort = 0; }
-    paint();
-  }
-  tick(); setInterval(tick, 2000);
-</script>
+    function tick() {
+      fetch("/shell/state").then(function (r) { return r.json(); }).then(function (d) {
+        paint(d.service, d.agentPort);
+        var onOffline = !!window.__UR_OFFLINE;
+        if (d.agentPort > 0) {
+          misses = 0;
+          if (onOffline) location.replace("/"); // agent is back - load the dashboard
+        } else if (!onOffline) {
+          // Dashboard loaded but agent gone (stopped, or restarting after an
+          // update): after a few misses, swap to the offline panel.
+          misses++;
+          if (misses >= 3) location.replace("/");
+        }
+      }).catch(function () {});
+    }
+    tick();
+    setInterval(tick, 2000);
+  });
+})();
+`
+
+// offlinePage is what the proxy serves when the agent isn't answering - a
+// Rise-styled panel instead of a browser error. The injected bar supplies
+// the Start button and swaps back to the dashboard when the agent returns.
+const offlinePage = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"/><title>UnitRise Gate Bridge</title></head>
+<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#FAF8F5;font:14px/1.5 'Segoe UI',sans-serif;color:#111322">
+<script>window.__UR_OFFLINE = true;</script>
+<div style="max-width:440px;text-align:center;padding:32px;background:#FFFFFF;border:1px solid #E9E5DC;border-radius:16px">
+  <svg style="width:44px;height:44px;margin-bottom:12px" viewBox="0 0 100 100" aria-hidden="true">
+    <polygon points="50,4 92,27 92,73 50,96 8,73 8,27" fill="none" stroke="#111322" stroke-width="5"/>
+    <polygon points="50,22 76,36 76,64 50,78 24,64 24,36" fill="#F59E0B"/>
+  </svg>
+  <h1 style="font-size:19px;margin:0 0 8px;font-weight:700">The sync agent isn't running</h1>
+  <p style="color:#4B4E63;margin:0">Gate codes aren't syncing right now - the gate keeps admitting from its
+  last list. Use <b>Start service</b> below; this page switches to the live dashboard by itself once the
+  agent is up.</p>
+</div>
 </body></html>`
