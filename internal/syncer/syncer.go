@@ -285,6 +285,22 @@ func (s *Syncer) consume(st *api.State) (int, string) {
 	}
 	s.log.Infof("consuming the gate codes (running %s)", full)
 
+	// Prefer the SIGNED-IN user's session (Windows service only): the gate
+	// vendor's desktop software lives there, and a sender run in session 0
+	// can no-op with exit 0 (Falcon site, 2026-09-06). Falls back to the
+	// plain exec when not applicable.
+	if exit, out, ran := runConsumeInSession(full, s.cfg.SavePath, 2*time.Minute); ran {
+		out = strings.TrimSpace(out + "\n[ran in the signed-in user's session]")
+		if len(out) > 2048 {
+			out = out[:2048]
+		}
+		s.log.Infof("consume finished in the user session (exit %d)", exit)
+		if out != "" {
+			s.log.Infof("consume process output:\n%s", out)
+		}
+		return exit, out
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	// shellCommand is per-OS: cmd.exe needs explicit quoting when the resolved
