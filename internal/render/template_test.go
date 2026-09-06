@@ -199,3 +199,52 @@ func TestFlexStringDecodesNumberAndString(t *testing.T) {
 		t.Fatalf("string tz decoded to %q, want \"011A\"", c.TimeZoneGroup)
 	}
 }
+
+// Vacant units (real Falcon 2000 lesson, 2026-09-06): a unit absent from a
+// full send KEEPS its old code in the controller, so stray pre-bridge codes
+// on vacant units never die. With a vacantLine, every unit gets a row; the
+// roster (keyed by code) never records the codeless rows, and delta formats
+// skip them entirely.
+func TestVacantLineRendersEveryUnit(t *testing.T) {
+	st := &api.State{
+		Credentials: []api.Credential{
+			{Code: "111111", UnitLabel: "A1", TenantName: "Ann Chen", Status: "active", TimeZoneGroup: "011A"},
+			{Code: "", UnitLabel: "A2", Status: "vacant", TimeZoneGroup: "011A"},
+		},
+	}
+	st.Settings.Format = &api.FormatSpec{Mode: "full", Line: "{unit} {code} {tenant} {tz}", VacantLine: "{unit} 0 VACANT {tz}", LineEnding: "lf", SortBy: "unit"}
+	b, err := (templateRenderer{}).Render(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "A1 111111 Ann Chen 011A\nA2 0 VACANT 011A\n"
+	if string(b) != want {
+		t.Fatalf("vacant render = %q, want %q", string(b), want)
+	}
+	tmplMu.Lock()
+	p := pending
+	tmplMu.Unlock()
+	if _, ok := p.Codes[""]; ok {
+		t.Fatal("a vacant (codeless) row must never enter the code-keyed roster")
+	}
+
+	// Blank vacantLine = vacant units are left out, exactly as before.
+	st.Settings.Format.VacantLine = ""
+	b, err = (templateRenderer{}).Render(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "A1 111111 Ann Chen 011A\n" {
+		t.Fatalf("blank vacantLine must omit vacant units, got %q", string(b))
+	}
+
+	// Delta mode never emits vacant rows, vacantLine or not.
+	st.Settings.Format = &api.FormatSpec{Mode: "delta", AddedLine: "A,{code},{unit}", VacantLine: "{unit} 0", LineEnding: "lf"}
+	b, err = (templateRenderer{}).Render(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "A2") {
+		t.Fatalf("delta output must not carry vacant units, got %q", string(b))
+	}
+}

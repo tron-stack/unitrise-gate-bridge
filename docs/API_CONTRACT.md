@@ -52,6 +52,7 @@ Headers: signing headers + optional `If-None-Match: "<stateHash>"`.
       "mode": "full",
       "header": "",
       "line": "{code},{unit},{tenant},{tz}",
+      "vacantLine": "",
       "suspendedLine": "",
       "addedLine": "",
       "changedLine": "",
@@ -90,6 +91,7 @@ Placeholders, usable in every template string:
 | Placeholder | Meaning |
 |---|---|
 | `{code}` `{unit}` `{tenant}` `{tz}` `{status}` | per-credential fields; `{tz}` is an alphanumeric zone/access STRING (e.g. PTI "011A" - was an int before 2026-09-06; agents decode both) |
+| `vacantLine` (format field) | rendered per VACANT unit, full mode only. When set, the server includes every unit as a `status:"vacant"`, empty-code credential row, so a full send rewrites the controller's per-unit records and clears stray codes on vacant units. Blank = vacant units omitted (pre-2026-09-06 behavior). |
 | `{facility}` `{date}` `{time}` `{count}` | file-level (header/footer; count = credential lines emitted) |
 | `{code:pad10}` | zero-pad left to width |
 | `{tenant:width20}` | space-pad right + truncate |

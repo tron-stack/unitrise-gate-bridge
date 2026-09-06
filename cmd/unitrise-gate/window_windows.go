@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"strings"
 	"time"
 	"unsafe"
@@ -71,15 +72,37 @@ func shellGuard(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // serveShell starts the window's own loopback server and returns its URL.
+// Layout: /shell/* is the window's own surface (frame page, service
+// control); EVERYTHING else reverse-proxies to the agent's dashboard, so
+// the embedded dashboard is SAME-ORIGIN with the shell - no cross-origin
+// iframe behavior to trust (first real-Windows run showed the dashboard not
+// rendering inside the frame, 2026-09-06).
 func serveShell() (string, error) {
+	proxy := &httputil.ReverseProxy{
+		Director: func(r *http.Request) {
+			port := findAgentPort()
+			if port == 0 {
+				port = ui.DefaultPort // proxy will 502; the shell hides the frame anyway
+			}
+			r.URL.Scheme = "http"
+			r.URL.Host = fmt.Sprintf("127.0.0.1:%d", port)
+			// The agent's browser guards pin Host to loopback - keep it true.
+			r.Host = r.URL.Host
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			w.WriteHeader(http.StatusBadGateway)
+			w.Write([]byte("agent not reachable")) //nolint:errcheck
+		},
+	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
+	mux.Handle("/", proxy)
+	mux.HandleFunc("/shell/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/shell/" {
 			http.NotFound(w, r)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(shellPage))
+		w.Write([]byte(shellPage)) //nolint:errcheck
 	})
 	mux.HandleFunc("/shell/state", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -156,7 +179,7 @@ func windowCmd() error {
 		return nil
 	}
 	defer w.Destroy()
-	w.Navigate(shellURL)
+	w.Navigate(shellURL + "/shell/")
 	w.Run()
 	return nil
 }
@@ -217,10 +240,13 @@ const shellPage = `<!doctype html>
     const up = agentPort > 0;
     // main area
     if (up) {
-      const src = "http://127.0.0.1:" + agentPort + "/";
-      if ($("frame").dataset.src !== src) { $("frame").src = src; $("frame").dataset.src = src; }
+      // Reload on every down->up transition (and port change): the frame may
+      // hold a stale 502 from when the agent was down.
+      const key = String(agentPort);
+      if ($("frame").dataset.key !== key) { $("frame").src = "/?t=" + Date.now(); $("frame").dataset.key = key; }
       $("frame").style.display = ""; $("offline").style.display = "none";
     } else {
+      $("frame").dataset.key = "";
       $("frame").style.display = "none"; $("offline").style.display = "flex";
       if (svc === "running" || svc === "starting" || busy) {
         $("offTitle").textContent = "Starting up…";

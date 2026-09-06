@@ -132,11 +132,19 @@ func (templateRenderer) Render(st *api.State) ([]byte, error) {
 	// The "effective" desired set is what the GATE should know. When the
 	// format can't express suspension (no suspendedLine), a suspended code's
 	// expression is absence - so it must also be absent from the roster, or a
-	// later restore would never re-add it.
+	// later restore would never re-add it. VACANT units (no code, sent so a
+	// full write can overwrite the controller's per-unit record and clear a
+	// stray pre-bridge code) render only in FULL mode through vacantLine -
+	// delta formats speak in code changes and have nothing to say about a
+	// codeless unit.
 	canSuspend := spec.SuspendedLine != ""
+	renderVacant := spec.Mode != "delta" && spec.VacantLine != ""
 	effective := make([]api.Credential, 0, len(creds))
 	for _, c := range creds {
 		if c.Status == "suspended" && !canSuspend {
+			continue
+		}
+		if c.Status == "vacant" && !renderVacant {
 			continue
 		}
 		effective = append(effective, c)
@@ -171,6 +179,9 @@ func (templateRenderer) Render(st *api.State) ([]byte, error) {
 	// after the file actually lands.
 	next := &rosterFile{ForceNonce: st.ForceNonce, Codes: map[string]rosterEntry{}}
 	for _, c := range effective {
+		if c.Status == "vacant" {
+			continue // no code to remember - the roster is keyed by code
+		}
 		next.Codes[c.Code] = rosterEntry{Unit: c.UnitLabel, Tenant: c.TenantName, Status: c.Status, TZ: c.TimeZoneGroup}
 	}
 	tmplMu.Lock()
@@ -185,8 +196,11 @@ func renderFull(spec *api.FormatSpec, st *api.State, effective []api.Credential)
 	for i := range effective {
 		c := &effective[i]
 		tpl := spec.Line
-		if c.Status == "suspended" {
+		switch c.Status {
+		case "suspended":
 			tpl = spec.SuspendedLine
+		case "vacant":
+			tpl = spec.VacantLine
 		}
 		if tpl == "" {
 			continue

@@ -299,6 +299,8 @@
         <td style="padding:7px 12px">${esc(r.tz || "")}</td>
         <td style="padding:7px 12px">${r.status === "suspended"
           ? '<span class="chip" style="background:var(--danger-wash);color:var(--danger)">suspended</span>'
+          : r.status === "vacant"
+          ? '<span class="chip" style="background:var(--card-soft);color:var(--muted);border:1px solid var(--line)">vacant</span>'
           : '<span class="chip" style="background:var(--success-wash);color:#15803D">active</span>'}</td>
       </tr>`).join("") ||
       '<tr><td colspan="5" style="padding:14px 12px;color:var(--muted)">No codes yet - they appear after the first sync.</td></tr>';

@@ -73,12 +73,16 @@ type FormatSpec struct {
 	Header        string `json:"header"`
 	Line          string `json:"line"`
 	SuspendedLine string `json:"suspendedLine"`
-	AddedLine     string `json:"addedLine"`
-	ChangedLine   string `json:"changedLine"`
-	RemovedLine   string `json:"removedLine"`
-	Footer        string `json:"footer"`
-	LineEnding    string `json:"lineEnding"` // crlf | lf
-	SortBy        string `json:"sortBy"`     // code | unit | name | none
+	// Rendered for VACANT units (full mode only; blank = vacant units are
+	// left out). Lets a full send rewrite the gate controller's per-unit
+	// records so stray pre-bridge codes on long-vacant units die.
+	VacantLine  string `json:"vacantLine"`
+	AddedLine   string `json:"addedLine"`
+	ChangedLine string `json:"changedLine"`
+	RemovedLine string `json:"removedLine"`
+	Footer      string `json:"footer"`
+	LineEnding  string `json:"lineEnding"` // crlf | lf
+	SortBy      string `json:"sortBy"`     // code | unit | name | none
 }
 
 type StateSettings struct {

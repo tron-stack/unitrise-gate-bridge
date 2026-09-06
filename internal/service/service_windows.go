@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -115,55 +117,79 @@ func Uninstall() error {
 func Start() error { return sc("start") }
 func Stop() error  { return sc("stop") }
 
-// Status answers "running" / "stopped" / "starting" / "not-installed" for the
-// control window's service bar. Querying needs no elevation (SCM grants
-// QUERY_STATUS to authenticated users by default).
+// lowRightsOpen opens the service with MINIMAL rights. mgr.Connect() asks for
+// SC_MANAGER_ALL_ACCESS, which a normal (unelevated) user is denied - that
+// made the control window's Status() error out and paint "service stopped"
+// while the service was RUNNING, and its Start button then collided with
+// reality ("sc start: 1056 already running" - user report 2026-09-06).
+// SC_MANAGER_CONNECT + SERVICE_QUERY_STATUS are granted to everyone.
+func lowRightsOpen(access uint32) (windows.Handle, windows.Handle, error) {
+	m, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		return 0, 0, err
+	}
+	s, err := windows.OpenService(m, windows.StringToUTF16Ptr(Name), access)
+	if err != nil {
+		windows.CloseServiceHandle(m) //nolint:errcheck
+		return 0, 0, err
+	}
+	return m, s, nil
+}
+
+// Status answers "running" / "starting" / "stopping" / "stopped" /
+// "not-installed" for the control window's service bar - WITHOUT elevation.
 func Status() string {
-	m, err := mgr.Connect()
+	m, s, err := lowRightsOpen(windows.SERVICE_QUERY_STATUS)
 	if err != nil {
+		if err == windows.ERROR_SERVICE_DOES_NOT_EXIST {
+			return "not-installed"
+		}
 		return "unknown"
 	}
-	defer m.Disconnect()
-	s, err := m.OpenService(Name)
-	if err != nil {
-		return "not-installed"
-	}
-	defer s.Close()
-	st, err := s.Query()
-	if err != nil {
+	defer windows.CloseServiceHandle(m) //nolint:errcheck
+	defer windows.CloseServiceHandle(s) //nolint:errcheck
+	var st windows.SERVICE_STATUS
+	if err := windows.QueryServiceStatus(s, &st); err != nil {
 		return "unknown"
 	}
-	switch st.State {
-	case svc.Running:
+	switch st.CurrentState {
+	case windows.SERVICE_RUNNING:
 		return "running"
-	case svc.StartPending:
+	case windows.SERVICE_START_PENDING:
 		return "starting"
-	case svc.StopPending:
+	case windows.SERVICE_STOP_PENDING:
 		return "stopping"
 	default:
 		return "stopped"
 	}
 }
 
-// Installed reports whether the service is registered (used by the built-in
-// installer to decide between fresh-install and update-in-place).
+// Installed reports whether the service is registered - low-rights on
+// purpose: the double-click path checks this UNELEVATED to decide between
+// "open the window" and "run the installer".
 func Installed() bool {
-	m, err := mgr.Connect()
+	m, s, err := lowRightsOpen(windows.SERVICE_QUERY_STATUS)
 	if err != nil {
 		return false
 	}
-	defer m.Disconnect()
-	s, err := m.OpenService(Name)
-	if err != nil {
-		return false
-	}
-	s.Close()
+	windows.CloseServiceHandle(s) //nolint:errcheck
+	windows.CloseServiceHandle(m) //nolint:errcheck
 	return true
 }
 
 func sc(verb string) error {
 	out, err := exec.Command("sc", verb, Name).CombinedOutput()
 	if err != nil {
+		// Idempotence: "start when already running" (1056) and "stop when not
+		// started" (1062) mean the service is ALREADY in the asked-for
+		// direction - the caller got what they wanted.
+		s := string(out)
+		if verb == "start" && strings.Contains(s, "1056") {
+			return nil
+		}
+		if verb == "stop" && strings.Contains(s, "1062") {
+			return nil
+		}
 		return fmt.Errorf("sc %s: %v\n%s", verb, err, out)
 	}
 	return nil
