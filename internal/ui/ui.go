@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/brand"
@@ -55,24 +56,47 @@ type Hooks struct {
 	OnUpdate func() (string, error)
 }
 
-// localBrowserGuard blocks the two ways a hostile web page could reach a
-// localhost API from the site clerk's browser:
-//   - CSRF: we only accept application/json, which browsers won't send
-//     cross-origin without a preflight we never approve - and any Origin
-//     header that isn't this page's own origin is refused outright.
-//   - DNS rebinding: the Host header must be a loopback address; a rebound
-//     hostname (attacker.com resolving to 127.0.0.1) fails this check.
-func localBrowserGuard(w http.ResponseWriter, r *http.Request) bool {
+// isLoopbackHost: the request's Host header names a loopback literal. This is
+// the DNS-rebinding gate and it wraps the WHOLE mux (audit 2026-09-07 H3):
+// a page at evil.com whose DNS was rebound to 127.0.0.1 becomes same-origin
+// with this server and could otherwise READ /api/roster - and the gate codes
+// in it ARE secrets. Every legitimate caller addresses 127.0.0.1/localhost.
+func isLoopbackHost(r *http.Request) bool {
 	host := r.Host
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
-	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+	return host == "127.0.0.1" || host == "localhost" || host == "::1"
+}
+
+// isLoopbackOrigin: an absent Origin (same-origin navigation, the tray's Go
+// client, curl) passes; a present one must PARSE to a loopback host. The old
+// prefix match accepted http://127.0.0.1.evil.com (audit 2026-09-07 M1).
+func isLoopbackOrigin(r *http.Request) bool {
+	o := r.Header.Get("Origin")
+	if o == "" {
+		return true
+	}
+	u, err := url.Parse(o)
+	if err != nil {
+		return false
+	}
+	h := u.Hostname()
+	return h == "127.0.0.1" || h == "localhost" || h == "::1"
+}
+
+// localBrowserGuard blocks the ways a hostile web page could reach a
+// localhost API from the site clerk's browser:
+//   - CSRF: we only accept application/json, which browsers won't send
+//     cross-origin without a preflight we never approve - and any Origin
+//     header that doesn't parse to loopback is refused outright.
+//   - DNS rebinding: the Host check (also enforced mux-wide in Serve).
+func localBrowserGuard(w http.ResponseWriter, r *http.Request) bool {
+	if !isLoopbackHost(r) {
 		http.Error(w, "forbidden host", http.StatusForbidden)
 		return false
 	}
-	if o := r.Header.Get("Origin"); o != "" && !strings.HasPrefix(o, "http://127.0.0.1") &&
-		!strings.HasPrefix(o, "http://localhost") && !strings.HasPrefix(o, "http://[::1]") {
+	if !isLoopbackOrigin(r) {
 		http.Error(w, "forbidden origin", http.StatusForbidden)
 		return false
 	}
@@ -126,6 +150,14 @@ func Serve(port int, hooks Hooks) (string, error) {
 	mux.HandleFunc("/api/force", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		// Not content-type-gated (the tray posts text/plain), but a browser's
+		// cross-site POST carries the page's Origin - refuse it. A drive-by
+		// page hammering force = continuous vendor-file rewrites + consume
+		// command runs, which is not "harmless" (audit 2026-09-07 M2).
+		if !isLoopbackOrigin(r) {
+			http.Error(w, "forbidden origin", http.StatusForbidden)
 			return
 		}
 		hooks.OnForce()
@@ -185,6 +217,16 @@ func Serve(port int, hooks Hooks) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("dashboard listen: %w", err)
 	}
-	go http.Serve(ln, mux) //nolint:errcheck - lives for the process lifetime
+	// The Host gate wraps EVERYTHING - the roster and status reads included
+	// (audit 2026-09-07 H3). The window's proxy rewrites Host to loopback
+	// before forwarding, so it passes.
+	guarded := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isLoopbackHost(r) {
+			http.Error(w, "forbidden host", http.StatusForbidden)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+	go http.Serve(ln, guarded) //nolint:errcheck - lives for the process lifetime
 	return "http://" + ln.Addr().String(), nil
 }

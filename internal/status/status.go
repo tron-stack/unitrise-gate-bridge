@@ -113,5 +113,10 @@ func Get() Snapshot {
 	defer mu.Unlock()
 	out := snap
 	out.Log = append([]string(nil), ring...)
+	if out.Log == nil {
+		// JSON null would throw in the dashboard's log.map and paint "agent
+		// not reachable" during the first milliseconds of a fresh boot.
+		out.Log = []string{}
+	}
 	return out
 }

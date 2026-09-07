@@ -160,6 +160,19 @@ func pairFromDashboard(req ui.PairRequest, log *logging.Logger) (ui.PairResult, 
 	if old, err := config.Load(); err == nil {
 		c = old // keep UIPort/LogFile/poll/file-name overrides
 	}
+	// A paired machine accepts an UNAUTHENTICATED re-pair only for ITS OWN
+	// facility (credential rotation - the dashboard's designed flow). Moving
+	// the box to a DIFFERENT facility through the open loopback API would
+	// hand any local process a lever to point this machine at a facility
+	// whose consume command THEY control - executed by this agent, possibly
+	// as SYSTEM - while the real facility silently stops getting suspensions
+	// (audit 2026-09-07 H2). Changing facilities requires local admin: an
+	// elevated `unitrise-gate pair` (which writes the protected config
+	// directly, with no agent running it falls back there), or reinstall.
+	if c.FacilityID != "" && strings.TrimSpace(req.FacilityID) != "" && strings.TrimSpace(req.FacilityID) != c.FacilityID {
+		return ui.PairResult{}, nil, fmt.Errorf(
+			"this machine is paired to a different facility - changing facilities needs an Administrator: run `unitrise-gate service stop` then `unitrise-gate pair --key … --secret … --facility … --save …` from an Administrator prompt")
+	}
 	c.AccessKey = strings.TrimSpace(req.AccessKey)
 	c.AccessSecret = strings.TrimSpace(req.AccessSecret)
 	c.FacilityID = strings.TrimSpace(req.FacilityID)

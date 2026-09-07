@@ -1,4 +1,4 @@
-VERSION ?= 0.5.7
+VERSION ?= 0.5.8
 LDFLAGS := -s -w -X github.com/mytruckyards/unitrise-gate-bridge/internal/api.AgentVersion=$(VERSION)
 # ONE Windows exe = installer + agent + tray + dashboard. GUI subsystem
 # (-H=windowsgui) so double-click and the login tray never flash a console;

@@ -4,6 +4,7 @@ package syncer
 
 import (
 	"context"
+	crand "crypto/rand"
 	"fmt"
 	"os"
 	"os/exec"
@@ -83,8 +84,13 @@ func runConsumeInSession(full, dir string, timeout time.Duration) (exit int, out
 
 	// Output rides a temp file in the save folder (the user can write there -
 	// it's the gate software's own directory); handle plumbing across
-	// CreateProcessAsUser isn't worth the ceremony.
-	outPath := filepath.Join(dir, "unitrise-consume-output.tmp")
+	// CreateProcessAsUser isn't worth the ceremony. The name is RANDOM per
+	// run: a fixed name in a user-writable folder invited pre-planted
+	// files/links whose content SYSTEM would read back and republish into
+	// the status API (audit 2026-09-07 M4).
+	var rnd [8]byte
+	crand.Read(rnd[:]) //nolint:errcheck - zero bytes still yield a usable name
+	outPath := filepath.Join(dir, fmt.Sprintf("unitrise-consume-%x.tmp", rnd))
 	cmdLine := `cmd /S /C "` + quoteIfNeeded(full) + ` > "` + outPath + `" 2>&1"`
 	cmdPtr, err := windows.UTF16PtrFromString(cmdLine)
 	if err != nil {
@@ -117,6 +123,7 @@ func runConsumeInSession(full, dir string, timeout time.Duration) (exit int, out
 	wait, _ := windows.WaitForSingleObject(pi.Process, uint32(timeout.Milliseconds()))
 	if wait != windows.WAIT_OBJECT_0 {
 		windows.TerminateProcess(pi.Process, 1) //nolint:errcheck
+		os.Remove(outPath)                      //nolint:errcheck - the timeout path must not litter the watched folder
 		return -2, fmt.Sprintf("timed out after %s in the user session", timeout), true
 	}
 	var code uint32

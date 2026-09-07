@@ -63,7 +63,10 @@ const (
 
 func msgBox(text string, flags uint32) int32 {
 	u32 := windows.NewLazySystemDLL("user32.dll")
-	t, _ := windows.UTF16PtrFromString("UnitRise Gate Bridge")
+	// Distinct from the control window's title: focusExistingWindow matches
+	// by title, and an identically-named message box would steal the match
+	// (audit 2026-09-07 L5).
+	t, _ := windows.UTF16PtrFromString("UnitRise Gate Bridge Setup")
 	x, _ := windows.UTF16PtrFromString(text)
 	r, _, _ := u32.NewProc("MessageBoxW").Call(0, uintptr(unsafe.Pointer(x)), uintptr(unsafe.Pointer(t)), uintptr(flags))
 	return int32(r)
@@ -391,6 +394,11 @@ func copyFile(src, dst string) error {
 	return out.Close()
 }
 
+// The machine Path is REG_EXPAND_SZ and carries %SystemRoot%-style entries.
+// Writing it back with SetStringValue (REG_SZ) stops those from expanding and
+// strips system32 from every later-launched process's PATH machine-wide -
+// SetExpandStringValue is MANDATORY here (audit 2026-09-07 H1: one install
+// with the plain setter was a time bomb on every customer gate PC).
 func addMachinePath(dir string) error {
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE, envKeyPath, registry.QUERY_VALUE|registry.SET_VALUE)
 	if err != nil {
@@ -406,7 +414,7 @@ func addMachinePath(dir string) error {
 			return nil
 		}
 	}
-	return k.SetStringValue("Path", strings.TrimRight(cur, ";")+";"+dir)
+	return k.SetExpandStringValue("Path", strings.TrimRight(cur, ";")+";"+dir)
 }
 
 func removeMachinePath(dir string) {
@@ -426,5 +434,5 @@ func removeMachinePath(dir string) {
 			kept = append(kept, p)
 		}
 	}
-	k.SetStringValue("Path", strings.Join(kept, ";")) //nolint:errcheck
+	k.SetExpandStringValue("Path", strings.Join(kept, ";")) //nolint:errcheck
 }

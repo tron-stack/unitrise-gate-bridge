@@ -26,6 +26,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"strings"
 	"time"
 	"unsafe"
@@ -53,8 +54,10 @@ func findAgentPort() int {
 	return 0
 }
 
-// shellGuard: loopback Host + no foreign Origin. The start/stop endpoints
-// only pop UAC prompts, but a drive-by page shouldn't get to pop them.
+// shellGuard: loopback Host, a PARSED loopback Origin (prefix matching passed
+// http://127.0.0.1.evil.com - audit 2026-09-07 M1), and JSON content-type so
+// a cross-site "simple POST" can never fire the UAC-popping start/stop - a
+// browser only sends JSON cross-origin after a preflight we never approve.
 func shellGuard(w http.ResponseWriter, r *http.Request) bool {
 	host := r.Host
 	if h, _, err := net.SplitHostPort(host); err == nil {
@@ -64,9 +67,19 @@ func shellGuard(w http.ResponseWriter, r *http.Request) bool {
 		http.Error(w, "forbidden host", http.StatusForbidden)
 		return false
 	}
-	if o := r.Header.Get("Origin"); o != "" && !strings.HasPrefix(o, "http://127.0.0.1") &&
-		!strings.HasPrefix(o, "http://localhost") {
-		http.Error(w, "forbidden origin", http.StatusForbidden)
+	if o := r.Header.Get("Origin"); o != "" {
+		u, err := url.Parse(o)
+		if err != nil {
+			http.Error(w, "forbidden origin", http.StatusForbidden)
+			return false
+		}
+		if h := u.Hostname(); h != "127.0.0.1" && h != "localhost" && h != "::1" {
+			http.Error(w, "forbidden origin", http.StatusForbidden)
+			return false
+		}
+	}
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		http.Error(w, "json only", http.StatusUnsupportedMediaType)
 		return false
 	}
 	return true
@@ -220,7 +233,7 @@ const barScript = `
     btn.onclick = function () {
       busyUntil = Date.now() + 8000; // give UAC + the SCM a beat
       btn.disabled = true;
-      fetch("/shell/" + btn.dataset.verb, { method: "POST" }).catch(function () {});
+      fetch("/shell/" + btn.dataset.verb, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(function () {});
     };
 
     function paint(svc, agentPort) {

@@ -133,6 +133,12 @@ func SelfUpdate(client *api.Client) (string, error) {
 	if info.DownloadURL == "" {
 		return "", fmt.Errorf("version %s is available but binaries aren't published for self-serve download yet - your UnitRise contact will send it", info.LatestVersion)
 	}
+	// TLS is the floor for a binary we're about to execute (there's no code
+	// signing yet - see the signing deferral): a plain-http URL, however it
+	// got into the server's config, is refused (audit 2026-09-07 L3).
+	if !strings.HasPrefix(info.DownloadURL, "https://") || (info.Sha256URL != "" && !strings.HasPrefix(info.Sha256URL, "https://")) {
+		return "", fmt.Errorf("refusing a non-https update URL (%s)", info.DownloadURL)
+	}
 
 	fmt.Printf("downloading %s (%s)...\n", info.LatestVersion, info.DownloadURL)
 	bin, err := client.Download(info.DownloadURL)
