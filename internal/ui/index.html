@@ -65,6 +65,8 @@
   a{color:var(--bronze)}
   .linkbtn{appearance:none;border:0;background:none;cursor:pointer;color:var(--bronze);font:inherit;padding:0;text-decoration:underline}
   .overlay{position:fixed;inset:0;background:rgba(7,19,33,.45);display:flex;align-items:center;justify-content:center;z-index:50;padding:20px}
+  /* author display:flex outranks the UA's [hidden]{display:none} - restore it */
+  .overlay[hidden]{display:none}
   .about{background:var(--card);border:1px solid var(--line);border-radius:16px;max-width:430px;width:100%;
          padding:30px 30px 24px;text-align:center}
   .about .appname{margin:2px 0 2px}
