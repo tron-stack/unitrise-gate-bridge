@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>About - UnitRise Gate Bridge</title>
+<link rel="icon" type="image/png" href="/assets/falcon-mark.png"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jost:wght@300;400;500;600&family=Inter:wght@400;600;700&display=swap"/>
+<style>
+  :root{
+    --paper:#FAF8F5; --card:#FFFFFF; --line:#E9E5DC;
+    --ink:#131F35; --body:#3E4A60; --muted:#6B7085;
+    --gold:#C38B4E; --bronze:#8E6235;
+  }
+  *{box-sizing:border-box} html,body{margin:0}
+  body{background:var(--paper);color:var(--ink);font:14px/1.5 Inter,-apple-system,"Segoe UI",Roboto,sans-serif;
+       min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;-webkit-font-smoothing:antialiased}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;max-width:440px;width:100%;
+        padding:32px 32px 26px;text-align:center}
+  .wordmark{font-family:Jost,'Century Gothic',system-ui,sans-serif;font-weight:300;font-size:13px;
+            letter-spacing:.34em;text-transform:uppercase;margin-top:12px}
+  .wordmark b{color:var(--bronze);font-weight:400}
+  .appname{font-family:Jost,'Century Gothic',system-ui,sans-serif;font-weight:500;font-size:24px;margin:2px 0}
+  .ver{color:var(--muted);font-size:12px}
+  p{color:var(--body);font-size:13px;text-align:left;margin:16px 0 0}
+  .legal{color:var(--muted);font-size:11.5px;margin-top:18px}
+  a{color:var(--bronze)}
+  .pill{display:inline-block;text-decoration:none;border-radius:999px;padding:9px 20px;font-weight:700;font-size:13px;
+        background:var(--gold);color:var(--ink);margin-top:20px}
+</style>
+</head>
+<body>
+<div class="card">
+  <img src="/assets/falcon-mark.png" alt="" style="height:76px;width:auto" />
+  <div class="wordmark">Unit<b>Rise</b></div>
+  <div class="appname">Gate Bridge</div>
+  <div class="ver">version <span id="ver">-</span></div>
+  <p>Gate Bridge keeps this site's gate system in sync with UnitRise. It pulls gate-code
+  changes from your property, writes your gate software's import file, and triggers the
+  import - so move-ins, suspensions, and move-outs reach the keypad without anyone
+  retyping a code.</p>
+  <div class="legal">&copy; <span id="year"></span> UnitRise. All rights reserved.<br/>
+    <a href="https://unitrise.com" target="_blank" rel="noreferrer">unitrise.com</a></div>
+  <div><a class="pill" href="/">Back to dashboard</a></div>
+</div>
+<script>
+  document.getElementById("year").textContent = new Date().getFullYear();
+  fetch("/api/status").then(function (r) { return r.json(); })
+    .then(function (s) { document.getElementById("ver").textContent = s.agentVersion; })
+    .catch(function () {});
+</script>
+</body>
+</html>

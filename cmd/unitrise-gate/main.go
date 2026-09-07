@@ -7,7 +7,7 @@
 // suspensions, code generation - lives in the cloud; this binary is dumb on
 // purpose.
 //
-//	unitrise-gate pair        interactive setup (key / secret / facility / paths)
+//	unitrise-gate pair        connect this machine (flags; routes via the running agent)
 //	unitrise-gate test        verify credentials + write a probe file
 //	unitrise-gate run         foreground loop (also the service entrypoint)
 //	unitrise-gate force       one full update now, then exit
@@ -20,7 +20,10 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
+	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -59,8 +62,10 @@ Usage: unitrise-gate <command>
 
 Setup (on the gate computer - or just double-click the exe on Windows):
   install    install on this machine: service + tray icon + setup page (Windows)
-  pair       enter the credentials from the console's Gate hardware card
-  test       verify the credentials and prove the save folder is writable
+  pair       connect this machine: pair --key K --secret S --facility F --save C:\PTI
+             (values from the console's Gate hardware card; the window's
+             pairing form is the same thing with a UI)
+  test       verify the connection (asks the running service when one is up)
   service    install | uninstall | start | stop   (Windows service / launchd)
 
 Day to day:
@@ -367,9 +372,26 @@ func run(forceOnce bool) error {
 // paired config for the signed update-check; a running service keeps working
 // on the old mapped image until it's restarted.
 func updateCmd() error {
+	// The running agent updates ITSELF: it downloads, verifies the checksum,
+	// swaps the binary, and the service restarts onto the new version. That
+	// works from any prompt, elevated or not, paired via window or CLI.
+	if base, _ := findLocalAgent(); base != "" {
+		fmt.Println("asking the running agent to update itself…")
+		msg, err := agentPost(base, "/api/update", map[string]string{}, 3*time.Minute)
+		if err != nil {
+			return err
+		}
+		if msg == "" {
+			msg = "installed - the service is restarting onto the new version"
+		}
+		fmt.Println(msg)
+		return nil
+	}
+	// No agent running: do it in this process (needs the config, which is
+	// readable only from an Administrator prompt).
 	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("no config (%v) - run `unitrise-gate pair` first", err)
+		return fmt.Errorf("no running agent found, and the config isn't readable from this prompt (%v)\nstart the service (unitrise-gate service start) and re-run, or use an Administrator prompt", err)
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -404,37 +426,152 @@ func serviceCmd() error {
 	}
 }
 
-// pair mirrors the storEDGE Gate Settings dialog: three credentials + paths.
+// ── the CLI talks to the running agent, not to the config file ──────────────
+// The config directory is locked to SYSTEM + Administrators on purpose (the
+// access secret lives there), which means an ordinary command prompt can
+// neither read nor write it. So every CLI action that used to need the config
+// first looks for the RUNNING agent on loopback and works through its API -
+// the same one the dashboard and window use. The direct-config path survives
+// only as the fallback for a machine where the service isn't running (and
+// then needs an Administrator prompt).
+
+// agentProbe is the slice of /api/status the CLI needs, decoded loosely so an
+// older agent with fewer fields still answers.
+type agentProbe struct {
+	AgentVersion string `json:"agentVersion"`
+	FacilityName string `json:"facilityName"`
+	Provider     string `json:"provider"`
+	CodeCount    int    `json:"codeCount"`
+	OK           bool   `json:"ok"`
+	Detail       string `json:"detail"`
+	// nil on agents that predate setup mode = "paired" (they wouldn't run otherwise).
+	Paired *bool `json:"paired"`
+}
+
+func (p *agentProbe) isPaired() bool { return p.Paired == nil || *p.Paired }
+
+// findLocalAgent probes the dashboard's port window for a running agent.
+func findLocalAgent() (string, *agentProbe) {
+	c := &http.Client{Timeout: 2 * time.Second}
+	for p := ui.DefaultPort; p < ui.DefaultPort+5; p++ {
+		base := fmt.Sprintf("http://127.0.0.1:%d", p)
+		resp, err := c.Get(base + "/api/status")
+		if err != nil {
+			continue
+		}
+		var s agentProbe
+		err = json.NewDecoder(resp.Body).Decode(&s)
+		resp.Body.Close()
+		if err == nil {
+			return base, &s
+		}
+	}
+	return "", nil
+}
+
+// agentPost sends a JSON POST to the running agent (satisfying its browser
+// guard: loopback host + application/json) and returns the response message.
+func agentPost(base, path string, body any, timeout time.Duration) (string, error) {
+	b, _ := json.Marshal(body)
+	c := &http.Client{Timeout: timeout}
+	resp, err := c.Post(base+path, "application/json", strings.NewReader(string(b)))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	json.NewDecoder(resp.Body).Decode(&out) //nolint:errcheck - tolerate empty bodies
+	msg := func(k string) string {
+		if v, ok := out[k].(string); ok {
+			return v
+		}
+		return ""
+	}
+	if resp.StatusCode >= 300 {
+		if e := msg("error"); e != "" {
+			return "", fmt.Errorf("%s", e)
+		}
+		return "", fmt.Errorf("agent answered %s", resp.Status)
+	}
+	return msg("message"), nil
+}
+
+// pair connects this machine to a UnitRise facility. Flags only - NO
+// interactive prompts: the Windows exe is a GUI-subsystem image, and cmd.exe
+// doesn't wait for those, so stdin prompts race the shell's own prompt (the
+// on-site symptom 2026-09-07: every typed answer became a "not recognized"
+// cmd error). When the agent is running, pairing routes through its /api/pair
+// - live-validated, saved by the service itself, no Administrator needed.
 func pair() error {
+	fs := flag.NewFlagSet("pair", flag.ContinueOnError)
+	key := fs.String("key", "", "access key from the console's Gate hardware card")
+	secret := fs.String("secret", "", "access secret")
+	facility := fs.String("facility", "", "facility ID")
+	save := fs.String("save", "", `folder the gate software watches (e.g. C:\PTI)`)
+	endpoint := fs.String("endpoint", "", "API endpoint (only when support says so)")
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		return err
+	}
+	base, snap := findLocalAgent()
+
+	if *key == "" && *secret == "" && *facility == "" && *save == "" {
+		if snap != nil && snap.isPaired() {
+			where := snap.FacilityName
+			if where == "" {
+				where = "your facility"
+			}
+			fmt.Printf("%s already connected to %s (%s, %d codes) - nothing to do.\n", check(), where, snap.Provider, snap.CodeCount)
+			fmt.Println("to re-pair: open the Gate Bridge window (Update credentials), or pass the flags below.")
+			fmt.Println("  unitrise-gate pair --key K --secret S --facility F --save C:\\PTI")
+			return nil
+		}
+		fmt.Println("Pairing takes the four values from the console's Gate hardware card:")
+		fmt.Println("  unitrise-gate pair --key K --secret S --facility F --save C:\\PTI [--endpoint URL]")
+		fmt.Println("Easiest path: open the Gate Bridge window - its pairing form does the same thing.")
+		return fmt.Errorf("missing --key/--secret/--facility/--save")
+	}
+
+	// The running agent validates LIVE and saves as the service - the config
+	// directory is service-only, so this is the path that works unelevated.
+	if base != "" {
+		fmt.Println("verifying with UnitRise (via the running agent)…")
+		_, err := agentPost(base, "/api/pair", map[string]string{
+			"accessKey":    strings.TrimSpace(*key),
+			"accessSecret": strings.TrimSpace(*secret),
+			"facilityId":   strings.TrimSpace(*facility),
+			"savePath":     strings.TrimSpace(*save),
+			"apiEndpoint":  strings.TrimSpace(*endpoint),
+		}, 30*time.Second)
+		if err != nil {
+			return fmt.Errorf("pairing failed: %w", err)
+		}
+		fmt.Printf("%s connected - the agent is syncing.\n", check())
+		return nil
+	}
+
+	// No agent running: write the config directly (needs an Administrator
+	// prompt - the directory is locked to SYSTEM + Administrators).
 	cfg, _ := config.Load()
 	if cfg == nil {
 		cfg = &config.Config{APIEndpoint: config.DefaultAPIEndpoint}
 	}
-	in := bufio.NewReader(os.Stdin)
-	ask := func(label, cur string) string {
-		if cur != "" {
-			fmt.Printf("%s [%s]: ", label, cur)
-		} else {
-			fmt.Printf("%s: ", label)
+	set := func(dst *string, v string) {
+		if v = strings.TrimSpace(v); v != "" {
+			*dst = v
 		}
-		t, _ := in.ReadString('\n')
-		t = strings.TrimSpace(t)
-		if t == "" {
-			return cur
-		}
-		return t
 	}
-	fmt.Println("UnitRise Gate Bridge pairing - values come from the console's Gate hardware card.")
-	cfg.AccessKey = ask("API Access Key", cfg.AccessKey)
-	cfg.AccessSecret = ask("API Access Secret", cfg.AccessSecret)
-	cfg.FacilityID = ask("API Facility ID", cfg.FacilityID)
-	cfg.SavePath = ask("Gate provider save path (folder the gate software watches)", cfg.SavePath)
-	cfg.APIEndpoint = config.NormalizeEndpoint(ask("API endpoint", cfg.APIEndpoint))
+	set(&cfg.AccessKey, *key)
+	set(&cfg.AccessSecret, *secret)
+	set(&cfg.FacilityID, *facility)
+	set(&cfg.SavePath, *save)
+	if strings.TrimSpace(*endpoint) != "" {
+		cfg.APIEndpoint = config.NormalizeEndpoint(*endpoint)
+	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
 	if err := cfg.Save(); err != nil {
-		return err
+		return fmt.Errorf("%w\n(the config folder is restricted - run this from an Administrator prompt, or start the service and re-run)", err)
 	}
 	fmt.Printf("%s saved %s\nnext: unitrise-gate test\n", check(), config.Path())
 	return nil
@@ -445,6 +582,25 @@ func pair() error {
 func test() error {
 	cfg, err := config.Load()
 	if err != nil {
+		// Service-only config - report through the running agent instead.
+		if base, snap := findLocalAgent(); base != "" && snap != nil {
+			if !snap.isPaired() {
+				return fmt.Errorf("the agent is running but not paired yet - open the Gate Bridge window, or: unitrise-gate pair --key … --secret … --facility … --save …")
+			}
+			where := snap.FacilityName
+			if where == "" {
+				where = "your facility"
+			}
+			if snap.OK {
+				fmt.Printf("%s agent %s is running and in sync - %s (%s, %d codes)\n", check(), snap.AgentVersion, where, snap.Provider, snap.CodeCount)
+				return nil
+			}
+			d := snap.Detail
+			if d == "" {
+				d = "open the Gate Bridge window for details"
+			}
+			return fmt.Errorf("agent %s is running but the last cycle failed: %s", snap.AgentVersion, d)
+		}
 		return err
 	}
 	if err := cfg.Validate(); err != nil {

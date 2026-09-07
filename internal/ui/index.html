@@ -63,16 +63,6 @@
   .pgrid input:focus{outline:2px solid var(--bronze);outline-offset:0;border-color:var(--bronze)}
   footer{margin-top:18px;color:var(--muted);font-size:12px;text-align:center}
   a{color:var(--bronze)}
-  .linkbtn{appearance:none;border:0;background:none;cursor:pointer;color:var(--bronze);font:inherit;padding:0;text-decoration:underline}
-  .overlay{position:fixed;inset:0;background:rgba(7,19,33,.45);display:flex;align-items:center;justify-content:center;z-index:50;padding:20px}
-  /* author display:flex outranks the UA's [hidden]{display:none} - restore it */
-  .overlay[hidden]{display:none}
-  .about{background:var(--card);border:1px solid var(--line);border-radius:16px;max-width:430px;width:100%;
-         padding:30px 30px 24px;text-align:center}
-  .about .appname{margin:2px 0 2px}
-  .about .ver{color:var(--muted);font-size:12px}
-  .about p{color:var(--body);font-size:13px;text-align:left;margin:14px 0 0}
-  .about .legal{color:var(--muted);font-size:11.5px;text-align:center;margin-top:16px}
 </style>
 </head>
 <body>
@@ -181,24 +171,7 @@
 
   <footer>UnitRise Gate Bridge · this page is served locally by the agent (127.0.0.1) ·
     <a href="https://unitrise.com/help" target="_blank" rel="noreferrer">Help center</a> ·
-    <button class="linkbtn" id="aboutBtn">About</button></footer>
-</div>
-
-<!-- About: name, version, what the program does, who makes it. -->
-<div class="overlay" id="aboutOverlay" hidden>
-  <div class="about" role="dialog" aria-modal="true" aria-labelledby="aboutName">
-    <img src="/assets/falcon-mark.png" alt="" style="height:72px;width:auto" />
-    <div class="wordmark" style="margin-top:10px">Unit<b>Rise</b></div>
-    <div class="appname" id="aboutName">Gate Bridge</div>
-    <div class="ver">version <span id="aboutVer">-</span></div>
-    <p>Gate Bridge keeps this site's gate system in sync with UnitRise. It pulls gate-code
-    changes from your property, writes your gate software's import file, and triggers the
-    import - so move-ins, suspensions, and move-outs reach the keypad without anyone
-    retyping a code.</p>
-    <div class="legal">&copy; <span id="aboutYear"></span> UnitRise. All rights reserved.<br/>
-      <a href="https://unitrise.com" target="_blank" rel="noreferrer">unitrise.com</a></div>
-    <div style="margin-top:18px"><button class="pill" id="aboutClose" style="margin-left:0">Close</button></div>
-  </div>
+    <a href="/about">About</a></footer>
 </div>
 <script>
   const $ = (id) => document.getElementById(id);
@@ -208,7 +181,6 @@
     try {
       const r = await fetch("/api/status"); const s = await r.json();
       $("ver").textContent = s.agentVersion;
-      $("aboutVer").textContent = s.agentVersion;
       $("uptime").textContent = "up since " + fmtT(s.startedAt);
       $("facName").textContent = s.facilityName || "(not yet pulled)";
       $("provider").textContent = s.provider || "-";
@@ -370,13 +342,6 @@
     } catch { /* card keeps its last content */ }
   }
   loadRoster(); setInterval(loadRoster, 10000);
-
-  // ── about ──────────────────────────────────────────────────────────────────
-  $("aboutYear").textContent = new Date().getFullYear();
-  $("aboutBtn").onclick = () => { $("aboutOverlay").hidden = false; };
-  $("aboutClose").onclick = () => { $("aboutOverlay").hidden = true; };
-  $("aboutOverlay").onclick = (e) => { if (e.target === $("aboutOverlay")) $("aboutOverlay").hidden = true; };
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("aboutOverlay").hidden = true; });
 
   tick(); setInterval(tick, 2000);
 </script>

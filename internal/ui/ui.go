@@ -20,6 +20,9 @@ import (
 //go:embed index.html
 var page []byte
 
+//go:embed about.html
+var aboutPage []byte
+
 const DefaultPort = 47810
 
 // PairRequest is the dashboard pairing form. Endpoint may be blank (default
@@ -95,6 +98,13 @@ func Serve(port int, hooks Hooks) (string, error) {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(page)
+	})
+	// About is its own PAGE, not a modal: it must be escapable by ordinary
+	// navigation in every host (browser tab, the WebView2 window) - a modal
+	// that misbehaves traps the whole dashboard (on-site 2026-09-07).
+	mux.HandleFunc("/about", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(aboutPage) //nolint:errcheck
 	})
 	mux.HandleFunc("/assets/falcon-mark.png", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
