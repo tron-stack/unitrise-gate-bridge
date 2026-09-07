@@ -3,13 +3,13 @@
     "FileVersion": {
       "Major": 0,
       "Minor": 5,
-      "Patch": 6,
+      "Patch": 7,
       "Build": 0
     },
     "ProductVersion": {
       "Major": 0,
       "Minor": 5,
-      "Patch": 6,
+      "Patch": 7,
       "Build": 0
     },
     "FileFlagsMask": "3f",
@@ -22,12 +22,12 @@
     "Comments": "Syncs gate access codes from UnitRise to the on-site gate software.",
     "CompanyName": "UnitRise",
     "FileDescription": "UnitRise Gate Bridge",
-    "FileVersion": "0.5.6",
+    "FileVersion": "0.5.7",
     "InternalName": "unitrise-gate",
     "LegalCopyright": "© 2026 UnitRise (Vairyn)",
     "OriginalFilename": "unitrise-gate.exe",
     "ProductName": "UnitRise Gate Bridge",
-    "ProductVersion": "0.5.6"
+    "ProductVersion": "0.5.7"
   },
   "VarFileInfo": {
     "Translation": {

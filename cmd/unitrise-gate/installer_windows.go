@@ -103,7 +103,25 @@ func relaunchElevated(arg string) error {
 func guiEntry() {
 	exe, _ := os.Executable()
 	if strings.EqualFold(exe, installedExe()) || service.Installed() {
-		// Already installed: double-click opens the control window.
+		// Already installed. The INSTALLED copy (shortcut, tray) opens the
+		// control window. A DIFFERENT exe being double-clicked is someone
+		// running a fresh download on an installed machine - the natural
+		// "install the update" gesture (on-site 2026-09-07: a downloaded
+		// 0.5.6 opened the old install's window and the fix never landed) -
+		// so offer to update in place; declining opens the window as before.
+		if !strings.EqualFold(exe, installedExe()) {
+			if msgBox("UnitRise Gate Bridge is already installed on this PC, and the file you opened is version "+api.AgentVersion+".\n\nUpdate the installed copy to this version? The service restarts on the new version in a few seconds, and the gate keeps admitting from its current list throughout.\n\nChoose No to just open the Gate Bridge window.", mbYesNo|mbIconQuestion) == idYes {
+				opts := installOpts{}
+				if !isElevated() {
+					if err := relaunchElevated(installArgs(opts)); err != nil {
+						report("Couldn't request administrator rights: "+err.Error(), true)
+					}
+					return
+				}
+				runGuiInstall(opts)
+				return
+			}
+		}
 		windowCmd() //nolint:errcheck - falls back to the browser internally
 		return
 	}
