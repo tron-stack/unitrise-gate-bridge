@@ -106,8 +106,7 @@ func trayReady() {
 	updateItem := systray.AddMenuItem("", "Download, verify, and restart onto the new version")
 	updateItem.Hide()
 	systray.AddSeparator()
-	verItem := systray.AddMenuItem("Version "+api.AgentVersion, "")
-	verItem.Disable()
+	aboutItem := systray.AddMenuItem("About Gate Bridge", "Version, copyright, and what this program does")
 	quitItem := systray.AddMenuItem("Quit", "Close this icon (the sync service keeps running)")
 
 	// The tray never blocks on the poll: state lands over a channel from a
@@ -208,6 +207,10 @@ func trayReady() {
 					// The agent restarts itself; the poller repaints state.
 				}(cur.base)
 			}
+		case <-aboutItem.ClickedCh:
+			go msgBox(fmt.Sprintf(
+				"UnitRise Gate Bridge\nVersion %s\n\nKeeps this site's gate system in sync with UnitRise: pulls gate-code changes from your property, writes your gate software's import file, and triggers the import - so move-ins, suspensions, and move-outs reach the keypad without anyone retyping a code.\n\n© %d UnitRise. All rights reserved.\nunitrise.com",
+				api.AgentVersion, time.Now().Year()), mbOK|mbIconInfo)
 		case <-quitItem.ClickedCh:
 			systray.Quit()
 			return

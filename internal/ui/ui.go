@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/mytruckyards/unitrise-gate-bridge/internal/brand"
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/status"
 )
 
@@ -94,6 +95,11 @@ func Serve(port int, hooks Hooks) (string, error) {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(page)
+	})
+	mux.HandleFunc("/assets/falcon-mark.png", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Write(brand.FalconMark) //nolint:errcheck
 	})
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -32,6 +32,7 @@ import (
 
 	webview2 "github.com/jchv/go-webview2"
 
+	"github.com/mytruckyards/unitrise-gate-bridge/internal/brand"
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/service"
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/ui"
 )
@@ -99,6 +100,13 @@ func serveShell() (string, error) {
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/", proxy)
+	// The mark, served by the WINDOW process itself - the offline panel needs
+	// it exactly when the agent (which serves /assets/…) is down.
+	mux.HandleFunc("/shell/logo.png", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Write(brand.FalconMark) //nolint:errcheck
+	})
 	mux.HandleFunc("/shell/state", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
@@ -197,13 +205,13 @@ const barScript = `
     var bar = document.createElement("div");
     bar.id = "urShellBar";
     bar.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:2147483647;display:flex;align-items:center;gap:10px;" +
-      "padding:9px 16px;border-top:1px solid #E9E5DC;background:#FFFFFF;font:12.5px/1.4 'Segoe UI',sans-serif;color:#4B4E63";
+      "padding:9px 16px;border-top:1px solid #E9E5DC;background:#FFFFFF;font:12.5px/1.4 Inter,'Segoe UI',sans-serif;color:#3E4A60";
     bar.innerHTML =
-      '<span id="urSvcDot" style="width:9px;height:9px;border-radius:99px;background:#8A8DA3;flex:none"></span>' +
+      '<span id="urSvcDot" style="width:9px;height:9px;border-radius:99px;background:#6B7085;flex:none"></span>' +
       '<span id="urSvcText" style="font-weight:600">Checking service…</span>' +
       '<button id="urSvcBtn" style="display:none;appearance:none;cursor:pointer;border-radius:999px;padding:6px 15px;font-weight:700;' +
-      'font-size:12.5px;background:#FFFFFF;color:#111322;border:1px solid #E9E5DC"></button>' +
-      '<span id="urSvcHint" style="margin-left:auto;color:#8A8DA3"></span>';
+      'font-size:12.5px;background:#FFFFFF;color:#131F35;border:1px solid #E9E5DC"></button>' +
+      '<span id="urSvcHint" style="margin-left:auto;color:#6B7085"></span>';
     document.body.appendChild(bar);
     document.body.style.paddingBottom = "52px";
 
@@ -222,20 +230,20 @@ const barScript = `
       var hint = document.getElementById("urSvcHint");
       btn.disabled = busy;
       if (svc === "running") {
-        dot.style.background = "#22C55E";
+        dot.style.background = "#15803D";
         txt.textContent = agentPort ? "Service running" : "Service running - agent coming online…";
         btn.style.display = ""; btn.textContent = "Stop service"; btn.dataset.verb = "stop";
         hint.textContent = "Stopping pauses code sync - the gate keeps its current list.";
       } else if (svc === "starting" || svc === "stopping" || busy) {
-        dot.style.background = "#F59E0B";
+        dot.style.background = "#C38B4E";
         txt.textContent = busy ? "Working… (allow the administrator prompt)" : "Service " + svc + "…";
         btn.style.display = "none"; hint.textContent = "";
       } else if (svc === "not-installed") {
-        dot.style.background = "#EF4444";
+        dot.style.background = "#B91C1C";
         txt.textContent = "Service not installed - run the installer again";
         btn.style.display = "none"; hint.textContent = "";
       } else {
-        dot.style.background = "#EF4444";
+        dot.style.background = "#B91C1C";
         txt.textContent = "Service stopped - gate codes are not syncing";
         btn.style.display = ""; btn.textContent = "Start service"; btn.dataset.verb = "start";
         hint.textContent = "";
@@ -268,15 +276,12 @@ const barScript = `
 // the Start button and swaps back to the dashboard when the agent returns.
 const offlinePage = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"/><title>UnitRise Gate Bridge</title></head>
-<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#FAF8F5;font:14px/1.5 'Segoe UI',sans-serif;color:#111322">
+<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#FAF8F5;font:14px/1.5 Inter,'Segoe UI',sans-serif;color:#131F35">
 <script>window.__UR_OFFLINE = true;</script>
 <div style="max-width:440px;text-align:center;padding:32px;background:#FFFFFF;border:1px solid #E9E5DC;border-radius:16px">
-  <svg style="width:44px;height:44px;margin-bottom:12px" viewBox="0 0 100 100" aria-hidden="true">
-    <polygon points="50,4 92,27 92,73 50,96 8,73 8,27" fill="none" stroke="#111322" stroke-width="5"/>
-    <polygon points="50,22 76,36 76,64 50,78 24,64 24,36" fill="#F59E0B"/>
-  </svg>
+  <img src="/shell/logo.png" alt="" style="height:56px;width:auto;margin-bottom:12px"/>
   <h1 style="font-size:19px;margin:0 0 8px;font-weight:700">The sync agent isn't running</h1>
-  <p style="color:#4B4E63;margin:0">Gate codes aren't syncing right now - the gate keeps admitting from its
+  <p style="color:#3E4A60;margin:0">Gate codes aren't syncing right now - the gate keeps admitting from its
   last list. Use <b>Start service</b> below; this page switches to the live dashboard by itself once the
   agent is up.</p>
 </div>

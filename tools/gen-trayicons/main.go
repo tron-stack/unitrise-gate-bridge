@@ -1,12 +1,20 @@
-// gen-trayicons draws the UnitRise hexagon mark (the dashboard header's
-// logo: dark outer hexagon ring, filled inner hexagon) into the tray icon
-// assets embedded by internal/trayicon. Three states, colored by the inner
-// fill: ok (amber), warn (red), off (gray).
+// gen-trayicons renders the tray + application icons from the real UnitRise
+// falcon mark (internal/brand/falcon-mark.png - the alpha-matted low-poly
+// peregrine from the platform brand kit), replacing the placeholder hexagon.
+//
+// Two treatments, per the brand kit's own rule:
+//   - tray states (16-32px): a SOLID SILHOUETTE via the mark's alpha channel,
+//     colored by state - at tray size the full-color bird (mostly navy) turns
+//     to mush and vanishes on dark taskbars; the silhouette is the kit's
+//     answer for small/dark chrome. ok = the measured gold, warn = red,
+//     off = gray.
+//   - app icon (Explorer / shortcuts / Add-Remove Programs, up to 256px):
+//     the FULL-COLOR cutout - large enough to read as the actual mark.
 //
 // Run from the repo root when the mark or palette changes:
 //   go run ./tools/gen-trayicons
-// Outputs internal/trayicon/assets/*.ico (Windows, PNG-compressed entries at
-// 16/24/32) and *.png (22px, macOS menu bar / Linux).
+// Outputs internal/trayicon/assets/*.ico (Windows, PNG-compressed entries)
+// and *.png (22px, macOS menu bar / Linux).
 package main
 
 import (
@@ -16,89 +24,67 @@ import (
 	"image"
 	"image/color"
 	"image/png"
-	"math"
 	"os"
 	"path/filepath"
+
+	xdraw "golang.org/x/image/draw"
+
+	"github.com/mytruckyards/unitrise-gate-bridge/internal/brand"
 )
 
-// Rise palette (mirrors internal/ui/index.html).
+// Tray state colors. ok is the brand's measured gold; warn/off are kept
+// bright enough to read on BOTH light and dark taskbars (the kit's AA-on-
+// white status colors go muddy on dark chrome at 16px).
 var (
-	ink   = color.NRGBA{0x11, 0x13, 0x22, 0xFF}
-	amber = color.NRGBA{0xF5, 0x9E, 0x0B, 0xFF}
-	red   = color.NRGBA{0xEF, 0x44, 0x44, 0xFF}
-	gray  = color.NRGBA{0x8A, 0x8D, 0xA3, 0xFF}
+	gold = color.NRGBA{0xC3, 0x8B, 0x4E, 0xFF} // brand.Gold
+	red  = color.NRGBA{0xEF, 0x44, 0x44, 0xFF}
+	gray = color.NRGBA{0x98, 0xA2, 0xB3, 0xFF}
 )
 
-// pointInHex reports whether (x, y) lies inside a regular flat-top hexagon
-// centered at (cx, cy) with circumradius r (vertices at top and bottom,
-// matching the dashboard SVG's point layout).
-func pointInHex(x, y, cx, cy, r float64) bool {
-	// Vertices every 60 degrees starting from straight up.
-	var vx, vy [6]float64
-	for i := 0; i < 6; i++ {
-		a := math.Pi/2 + float64(i)*math.Pi/3
-		vx[i] = cx + r*math.Cos(a)
-		vy[i] = cy - r*math.Sin(a)
+func loadMark() *image.NRGBA {
+	src, err := png.Decode(bytes.NewReader(brand.FalconMark))
+	if err != nil {
+		panic(err)
 	}
-	// Point-in-convex-polygon: consistent cross-product sign for all edges.
-	sign := 0.0
-	for i := 0; i < 6; i++ {
-		j := (i + 1) % 6
-		cross := (vx[j]-vx[i])*(y-vy[i]) - (vy[j]-vy[i])*(x-vx[i])
-		if cross != 0 {
-			if sign == 0 {
-				sign = cross
-			} else if (cross > 0) != (sign > 0) {
-				return false
-			}
-		}
-	}
-	return true
+	b := src.Bounds()
+	img := image.NewNRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+	xdraw.Draw(img, img.Bounds(), src, b.Min, xdraw.Src)
+	return img
 }
 
-// render draws the mark at size px with 8x supersampling for smooth edges.
-func render(size int, fill color.NRGBA) *image.NRGBA {
-	const ss = 8
-	big := size * ss
-	cx, cy := float64(big)/2, float64(big)/2
-	outer := float64(big) * 0.48
-	ringInner := float64(big) * 0.38 // outer ring thickness
-	inner := float64(big) * 0.28     // the state-colored core
-
-	img := image.NewNRGBA(image.Rect(0, 0, size, size))
-	for py := 0; py < size; py++ {
-		for px := 0; px < size; px++ {
-			var rs, gs, bs, as, n float64
-			for sy := 0; sy < ss; sy++ {
-				for sx := 0; sx < ss; sx++ {
-					x := float64(px*ss+sx) + 0.5
-					y := float64(py*ss+sy) + 0.5
-					var c color.NRGBA
-					switch {
-					case pointInHex(x, y, cx, cy, inner):
-						c = fill
-					case pointInHex(x, y, cx, cy, ringInner):
-						c = color.NRGBA{} // gap between ring and core
-					case pointInHex(x, y, cx, cy, outer):
-						c = ink
-					default:
-						c = color.NRGBA{}
-					}
-					rs += float64(c.R) * float64(c.A)
-					gs += float64(c.G) * float64(c.A)
-					bs += float64(c.B) * float64(c.A)
-					as += float64(c.A)
-					n++
-				}
-			}
-			if as > 0 {
-				img.SetNRGBA(px, py, color.NRGBA{
-					R: uint8(rs / as), G: uint8(gs / as), B: uint8(bs / as), A: uint8(as / n),
-				})
-			}
-		}
+// fit scales the mark to fill a size x size square (small inset so wingtips
+// never touch the icon edge), preserving aspect, centered. CatmullRom keeps
+// the facet edges clean at tiny sizes.
+func fit(mark *image.NRGBA, size int) *image.NRGBA {
+	out := image.NewNRGBA(image.Rect(0, 0, size, size))
+	inset := size / 16
+	box := size - 2*inset
+	mw, mh := mark.Bounds().Dx(), mark.Bounds().Dy()
+	w, h := box, box*mh/mw
+	if h > box {
+		h, w = box, box*mw/mh
 	}
-	return img
+	x0 := (size - w) / 2
+	y0 := (size - h) / 2
+	xdraw.CatmullRom.Scale(out, image.Rect(x0, y0, x0+w, y0+h), mark, mark.Bounds(), xdraw.Over, nil)
+	return out
+}
+
+// silhouette recolors every pixel to the state color, keeping the mark's
+// alpha - the kit's "solid" variant for small or dark chrome.
+func silhouette(img *image.NRGBA, c color.NRGBA) *image.NRGBA {
+	out := image.NewNRGBA(img.Bounds())
+	for i := 0; i < len(img.Pix); i += 4 {
+		a := img.Pix[i+3]
+		if a == 0 {
+			continue
+		}
+		out.Pix[i+0] = c.R
+		out.Pix[i+1] = c.G
+		out.Pix[i+2] = c.B
+		out.Pix[i+3] = a
+	}
+	return out
 }
 
 func pngBytes(img image.Image) []byte {
@@ -144,18 +130,20 @@ func main() {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		panic(err)
 	}
-	states := map[string]color.NRGBA{"ok": amber, "warn": red, "off": gray}
+	mark := loadMark()
+
+	states := map[string]color.NRGBA{"ok": gold, "warn": red, "off": gray}
 	for name, fill := range states {
-		// Windows: multi-size ico.
+		// Windows: multi-size ico of the state-colored silhouette.
 		sizes := map[int][]byte{}
 		for _, s := range []int{16, 24, 32} {
-			sizes[s] = pngBytes(render(s, fill))
+			sizes[s] = pngBytes(silhouette(fit(mark, s), fill))
 		}
 		if err := os.WriteFile(filepath.Join(outDir, name+".ico"), ico(sizes, []int{16, 24, 32}), 0o644); err != nil {
 			panic(err)
 		}
 		// macOS menu bar / Linux: single 22px png.
-		if err := os.WriteFile(filepath.Join(outDir, name+".png"), pngBytes(render(22, fill)), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(outDir, name+".png"), pngBytes(silhouette(fit(mark, 22), fill)), 0o644); err != nil {
 			panic(err)
 		}
 		fmt.Println("wrote", name+".ico", "+", name+".png")
@@ -163,11 +151,17 @@ func main() {
 
 	// The application icon - embedded into the Windows exe by the version
 	// resource (Makefile winres -icon), so Explorer, the desktop shortcut,
-	// and Add/Remove Programs show the mark instead of the generic exe icon.
+	// and Add/Remove Programs show the falcon itself. Full color: these
+	// sizes are large enough for the real mark, and 16/24 fall back to the
+	// gold silhouette where the full bird would smear.
 	appSizes := map[int][]byte{}
 	order := []int{16, 24, 32, 48, 256}
 	for _, s := range order {
-		appSizes[s] = pngBytes(render(s, amber))
+		if s <= 24 {
+			appSizes[s] = pngBytes(silhouette(fit(mark, s), gold))
+		} else {
+			appSizes[s] = pngBytes(fit(mark, s))
+		}
 	}
 	if err := os.WriteFile(filepath.Join(outDir, "app.ico"), ico(appSizes, order), 0o644); err != nil {
 		panic(err)

@@ -165,13 +165,15 @@ func TestUnknownPlaceholderSurvivesLiterally(t *testing.T) {
 }
 
 // Pinned against a real Falcon 2000 site's storEDGE update.old, measured
-// on site 2026-09-07: FIXED-WIDTH columns, not space-separated - unit at
-// column 1, code at column 11, tenant at column 21, zone at column 51
-// (lines capped at 63 chars; long values truncate in place, never shifting
-// the next field). The importer reads by POSITION: the site's first
-// single-space attempt came back result.dat "1:1" (rejected at record 1)
-// while storEDGE's fixed columns returned "0:258". The zone/access code is
-// ALPHANUMERIC - "011A" for zone 1.
+// on site and CONFIRMED WORKING 2026-09-07: FIXED-WIDTH columns, not
+// space-separated - unit at column 1, code at column 11, tenant at column
+// 21, zone at column 51, every line space-padded to exactly 63 characters
+// (long values truncate in place, never shifting the next field). The
+// importer reads by POSITION: the site's first single-space attempt came
+// back result.dat "1:1" (rejected at record 1) while storEDGE's fixed
+// columns returned "0:258"; with this layout the Falcon accepted the file
+// and pushed codes to the keypads. The zone/access code is ALPHANUMERIC -
+// "011A" for zone 1.
 func TestFalconLayoutFixedColumns(t *testing.T) {
 	st := &api.State{
 		Credentials: []api.Credential{
@@ -180,21 +182,21 @@ func TestFalconLayoutFixedColumns(t *testing.T) {
 			{Code: "9876543210", UnitLabel: "LONGUNIT99", TenantName: "A Tenant Name So Long It Overruns The Column", Status: "active", TimeZoneGroup: "011A"},
 		},
 	}
-	falconLine := "{unit:width10}{code:width10}{tenant:width30}{tz}"
+	falconLine := "{unit:width10}{code:width10}{tenant:width30}{tz:width13}"
 	st.Settings.Format = &api.FormatSpec{Mode: "full", Line: falconLine, VacantLine: falconLine, LineEnding: "crlf", SortBy: "unit"}
 	b, err := (templateRenderer{}).Render(st)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "A14       482913    Maria Torres                  011A\r\n" +
-		"B02                                               011A\r\n" +
-		"LONGUNIT999876543210A Tenant Name So Long It Overr011A\r\n"
+	want := "A14       482913    Maria Torres                  011A         \r\n" +
+		"B02                                               011A         \r\n" +
+		"LONGUNIT999876543210A Tenant Name So Long It Overr011A         \r\n"
 	if got := string(b); got != want {
 		t.Fatalf("Falcon fixed columns =\n%q\nwant\n%q", got, want)
 	}
 	for _, line := range strings.Split(strings.TrimRight(string(b), "\r\n"), "\r\n") {
-		if len(line) > 63 {
-			t.Fatalf("line exceeds the Falcon's 63-char cap: %q", line)
+		if len(line) != 63 {
+			t.Fatalf("Falcon lines are exactly 63 chars, got %d: %q", len(line), line)
 		}
 	}
 }
