@@ -12,7 +12,9 @@
 //     the FULL-COLOR cutout - large enough to read as the actual mark.
 //
 // Run from the repo root when the mark or palette changes:
-//   go run ./tools/gen-trayicons
+//
+//	go run ./tools/gen-trayicons
+//
 // Outputs internal/trayicon/assets/*.ico (Windows, PNG-compressed entries)
 // and *.png (22px, macOS menu bar / Linux).
 package main
@@ -109,10 +111,10 @@ func ico(images map[int][]byte, order []int) []byte {
 		if size >= 256 {
 			w = 0
 		}
-		b.WriteByte(w) // width
-		b.WriteByte(w) // height
-		b.WriteByte(0) // palette colors
-		b.WriteByte(0) // reserved
+		b.WriteByte(w)                                    // width
+		b.WriteByte(w)                                    // height
+		b.WriteByte(0)                                    // palette colors
+		b.WriteByte(0)                                    // reserved
 		binary.Write(&b, binary.LittleEndian, uint16(1))  // planes
 		binary.Write(&b, binary.LittleEndian, uint16(32)) // bit depth
 		binary.Write(&b, binary.LittleEndian, uint32(len(data)))
