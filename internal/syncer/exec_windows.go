@@ -17,29 +17,18 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// shellCommand builds the consume invocation for cmd.exe.
-//
-// The consume value is free text from the console - usually a bare batch-file
-// name ("Ptisend.bat"), sometimes a full command line with arguments. When the
-// resolved value is an actual file whose path contains spaces, it must be
-// quoted; `cmd /S /C " … "` is the documented reliable form (outer quotes
-// stripped exactly once by /S). Go's default Windows arg escaping through
-// exec.Command("cmd", "/C", full) mangles exactly this case, so the raw
-// command line is set explicitly.
-func shellCommand(ctx context.Context, full string) *exec.Cmd {
-	line := quoteIfNeeded(full)
-	cmd := exec.CommandContext(ctx, "cmd")
-	cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: `cmd /S /C "` + line + `"`}
+// directCommand starts the consume file itself, by its full path, with no
+// arguments and no shell (2026-11-13, part 6 audit ED-6: it used to be free
+// text handed to `cmd /S /C`). `full` has passed resolveConsume - a plain
+// .bat, .cmd or .exe name, a real file in the save folder. A .bat or .cmd
+// still runs inside cmd.exe, because that is how Windows starts a batch file
+// even through CreateProcess, so the raw command line is set to the one
+// quoted path: cmd.exe then sees a single quoted file name whatever the save
+// folder is called (C:\Program Files\PTI). A Windows path never holds a quote.
+func directCommand(ctx context.Context, full string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, full)
+	cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: `"` + full + `"`}
 	return cmd
-}
-
-func quoteIfNeeded(full string) string {
-	if strings.Contains(full, " ") && !strings.Contains(full, `"`) {
-		if _, err := os.Stat(full); err == nil {
-			return `"` + full + `"`
-		}
-	}
-	return full
 }
 
 var (
@@ -91,7 +80,24 @@ func runConsumeInSession(full, dir string, timeout time.Duration) (exit int, out
 	var rnd [8]byte
 	crand.Read(rnd[:]) //nolint:errcheck - zero bytes still yield a usable name
 	outPath := filepath.Join(dir, fmt.Sprintf("unitrise-consume-%x.tmp", rnd))
-	cmdLine := `cmd /S /C "` + quoteIfNeeded(full) + ` > "` + outPath + `" 2>&1"`
+	// cmd.exe here only sends the output to that file: Windows does not let a
+	// service hand its own file handles to a process in another session. The
+	// line is built from the checked consume path and the random output path
+	// alone (consume.go sessionConsumeLine, ED-6), and cmd.exe is named by its
+	// full system path so nothing in the save folder can stand in for it.
+	sysDir, err := windows.GetSystemDirectory()
+	if err != nil {
+		return 0, "", false
+	}
+	cmdExe := filepath.Join(sysDir, "cmd.exe")
+	cmdLine, err := sessionConsumeLine(cmdExe, full, outPath)
+	if err != nil {
+		return 0, "", false
+	}
+	appPtr, err := windows.UTF16PtrFromString(cmdExe)
+	if err != nil {
+		return 0, "", false
+	}
 	cmdPtr, err := windows.UTF16PtrFromString(cmdLine)
 	if err != nil {
 		return 0, "", false
@@ -113,7 +119,7 @@ func runConsumeInSession(full, dir string, timeout time.Duration) (exit int, out
 	pi := &windows.ProcessInformation{}
 	const createNoWindow = 0x08000000
 	const createUnicodeEnv = 0x00000400
-	if err := windows.CreateProcessAsUser(token, nil, cmdPtr, nil, nil, false,
+	if err := windows.CreateProcessAsUser(token, appPtr, cmdPtr, nil, nil, false,
 		createNoWindow|createUnicodeEnv, env, dirPtr, si, pi); err != nil {
 		return 0, "", false
 	}

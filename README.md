@@ -15,7 +15,9 @@ Every ~5 minutes (server-tunable), the agent:
 3. **atomically** writes that file into the folder the on-site gate software
    watches (e.g. `C:\PTI\UPDATE.DAT`),
 4. runs the vendor's consume command if one exists (e.g. `Ptisend.bat`,
-   PTI-MI's import trigger) and captures its output,
+   PTI-MI's import trigger): the plain name of a `.bat`, `.cmd` or `.exe`
+   file in that same folder, run as the file itself with no arguments, never
+   as a command line, and captures its output,
 5. reports applied-state + a heartbeat, which drive the console's
    online/offline banner.
 
@@ -139,14 +141,32 @@ keeps the pairing. `uninstall.ps1` (or Add/Remove Programs) reverses it
 
 Manual equivalent - or on macOS (launchd; run with sudo):
 
-1. In UnitRise: yard → Gate hardware → provider + **Generate bridge
-   credentials** (Access Key / Secret / Facility ID - shown once).
+1. In UnitRise: Properties → **Gate** on the property's row → provider +
+   **Generate bridge credentials** (Access Key / Secret / Facility ID). The
+   card can bring the current pair up again with **Show credentials**
+   (manager-gated, and the server records who looked); rotating replaces
+   the pair and the agent must be paired again.
 2. On the gate PC: `unitrise-gate pair` (paste the three values + the folder
    the gate software watches), then `unitrise-gate test`.
 3. `unitrise-gate service install && unitrise-gate service start`
-4. Verify in the console: the Gate hardware card shows the agent online and
-   the last applied state. `unitrise-gate ui` opens the local dashboard
+4. Verify in the console: the Gate card shows the agent online and the last
+   applied state. `unitrise-gate ui` opens the local dashboard
    (http://127.0.0.1:47810).
+5. Choose the gate software on the Gate card and press **Save**. Until a
+   format is saved the agent writes only `UNITRISE-GATE-TEST.txt` (the server
+   sends no file name in that mode, so the test output never lands under the
+   gate software's own file name) and no codes reach the keypad. The gate
+   file name and the consume command are plain file names in the save folder
+   (`UPDATE.DAT`, `Ptisend.bat`): no folder path, no arguments, no second
+   command. The console refuses anything else at Save and the agent refuses
+   it too, its own `config.json` overrides included (see
+   [docs/API_CONTRACT.md](docs/API_CONTRACT.md)). A trigger that needs
+   arguments goes in a one-line `.bat` in the save folder, and that file's
+   name is the consume command.
+6. Test it: suspend a test code and check the keypad turns it away. A red
+   **Not reaching the gate** on the card means the agent is running but its
+   last write or consume command failed; the card shows the agent's own
+   detail.
 
 ## Production behaviors worth knowing
 
@@ -159,10 +179,22 @@ Manual equivalent - or on macOS (launchd; run with sudo):
 - **Failure**: cycles retry on a 30s→4m backoff with jitter instead of
   waiting out the poll interval; a panic in a cycle logs and retries rather
   than killing the service; a drifted PC clock gets its own diagnosis
-  ("fix Windows time sync") instead of a misleading "re-pair".
+  ("fix Windows time sync") instead of a misleading "re-pair". A failed
+  sync (`ok: false` on the heartbeat, or a nonzero consume exit) turns the
+  console card red with the agent's detail, and the owner is emailed once
+  per outage.
 - **Updates**: log-only detection (hourly until the first successful check,
   then daily); the swap is always a person running `unitrise-gate update`,
   and a published SHA256SUMS makes checksum verification mandatory.
+- **The consume command is a file, not a command line** (2026-11-13): the
+  agent runs only a `.bat`, `.cmd` or `.exe` that sits directly in the save
+  folder, by its own path, with no arguments and never as a command line (a
+  batch file runs in `cmd.exe` the way Windows runs one, handed only that
+  path), and writes the gate file only directly into that folder. Anything else is refused in
+  words, nothing is written or run, and the card turns red with the reason.
+- **A property that moves to another organization** stops syncing: the old
+  pair is refused (401) from the next request, and the new owner pairs the
+  agent again from their own Gate card.
 
 ## Vendor renderers - the iron rule
 

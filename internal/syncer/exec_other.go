@@ -14,6 +14,9 @@ func runConsumeInSession(full, dir string, timeout time.Duration) (int, string, 
 	return 0, "", false
 }
 
-func shellCommand(ctx context.Context, full string) *exec.Cmd {
-	return exec.CommandContext(ctx, "/bin/sh", "-c", full)
+// directCommand starts the consume file itself (exec, no shell, no
+// arguments): `full` has passed resolveConsume (2026-11-13, part 6 audit
+// ED-6 - it used to be free text handed to `/bin/sh -c`).
+func directCommand(ctx context.Context, full string) *exec.Cmd {
+	return exec.CommandContext(ctx, full)
 }

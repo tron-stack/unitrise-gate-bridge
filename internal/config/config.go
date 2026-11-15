@@ -33,7 +33,11 @@ type Config struct {
 	// Local gate-software handoff. SavePath is the folder the gate software
 	// watches (e.g. C:\PTI). File name + consume command normally come from
 	// the SERVER state response so support can fix them without touching the
-	// site machine; these local values are fallbacks/overrides.
+	// site machine; these local values are fallbacks/overrides. Both are held
+	// to the same rule as the server's values (internal/syncer/consume.go):
+	// a plain file name inside SavePath, never a path, and the consume
+	// command a .bat, .cmd or .exe file run by itself, with no arguments and
+	// no shell.
 	SavePath          string `json:"savePath"`
 	GeneratedFileName string `json:"generatedFileName,omitempty"`
 	ConsumeCommand    string `json:"consumeCommand,omitempty"`

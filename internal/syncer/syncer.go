@@ -188,19 +188,24 @@ func (s *Syncer) apply(st *api.State) error {
 	if err != nil {
 		return err
 	}
+	// Which file to write: this PC's own override, else the server's name,
+	// else the renderer's default - and whichever it is, a plain file name
+	// inside the save folder, or nothing is written (consume.go, ED-6).
+	name, local := st.Settings.GeneratedFileName, false
+	if s.cfg.GeneratedFileName != "" {
+		name, local = s.cfg.GeneratedFileName, true
+	}
+	if name == "" {
+		name, local = r.FileName(), false
+	}
+	target, err := gateFilePath(s.cfg.SavePath, name, local)
+	if err != nil {
+		return err
+	}
 	data, err := r.Render(st)
 	if err != nil {
 		return fmt.Errorf("render %s: %w", st.Provider, err)
 	}
-
-	name := st.Settings.GeneratedFileName
-	if s.cfg.GeneratedFileName != "" {
-		name = s.cfg.GeneratedFileName
-	}
-	if name == "" {
-		name = r.FileName()
-	}
-	target := filepath.Join(s.cfg.SavePath, name)
 
 	if err := os.MkdirAll(s.cfg.SavePath, 0o755); err != nil {
 		return fmt.Errorf("save path: %w", err)
@@ -270,18 +275,23 @@ func (s *Syncer) apply(st *api.State) error {
 }
 
 // consume runs the vendor's import trigger (e.g. PTI's Ptisend.bat), if one is
-// configured. Exit code -1 = no command configured; -2 = failed to start.
+// configured. Exit code -1 = no command configured; -2 = refused or failed to
+// start. The command is a plain .bat, .cmd or .exe file name, run from the
+// save folder as the file itself - never a command line, never through a
+// shell (consume.go, ED-6). A full path or a command with arguments, which an
+// older agent accepted, is refused in words and nothing runs.
 func (s *Syncer) consume(st *api.State) (int, string) {
-	cmdName := st.Settings.ConsumeCommand
+	cmdName, local := st.Settings.ConsumeCommand, false
 	if s.cfg.ConsumeCommand != "" {
-		cmdName = s.cfg.ConsumeCommand
+		cmdName, local = s.cfg.ConsumeCommand, true
 	}
 	if cmdName == "" {
 		return -1, ""
 	}
-	full := cmdName
-	if !filepath.IsAbs(full) {
-		full = filepath.Join(s.cfg.SavePath, cmdName)
+	full, err := resolveConsume(s.cfg.SavePath, cmdName, local)
+	if err != nil {
+		s.log.Errorf("%v", err)
+		return -2, err.Error()
 	}
 	s.log.Infof("consuming the gate codes (running %s)", full)
 
@@ -303,10 +313,10 @@ func (s *Syncer) consume(st *api.State) (int, string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	// shellCommand is per-OS: cmd.exe needs explicit quoting when the resolved
-	// path has spaces (C:\Program Files\PTI\Ptisend.bat) - exec's default
-	// Windows escaping through `cmd /C` mangles it.
-	cmd := shellCommand(ctx, full)
+	// The file itself, by its full path, with no arguments and no shell.
+	// directCommand is per-OS: on Windows it hands the batch-file case one
+	// quoted path, so a save folder with spaces (C:\Program Files\PTI) works.
+	cmd := directCommand(ctx, full)
 	cmd.Dir = s.cfg.SavePath
 	outB, err := cmd.CombinedOutput()
 	out := strings.TrimSpace(string(outB))
