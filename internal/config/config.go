@@ -8,6 +8,10 @@
 //	other:   /etc/unitrise-gate-bridge/config.json
 //
 // Override with UNITRISE_GATE_CONFIG for tests/dev.
+//
+// On Windows the folder is Administrators' own and limited to SYSTEM and
+// Administrators, and a config.json in a folder anyone else could have written
+// is refused (trust.go).
 package config
 
 import (
@@ -18,6 +22,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/mytruckyards/unitrise-gate-bridge/internal/fsutil"
 )
 
 type Config struct {
@@ -108,10 +114,16 @@ func Path() string {
 	return filepath.Join(Dir(), "config.json")
 }
 
+// Load reads config.json. It REFUSES one nobody but SYSTEM and Administrators
+// could vouch for (trust.go): an UntrustedError, matching ErrUntrusted, and
+// the agent then runs unpaired.
 func Load() (*Config, error) {
 	b, err := os.ReadFile(Path())
 	if err != nil {
 		return nil, err
+	}
+	if p := checkTrust(); p != "" {
+		return nil, &UntrustedError{Problem: p}
 	}
 	var c Config
 	if err := json.Unmarshal(b, &c); err != nil {
@@ -129,22 +141,22 @@ func (c *Config) Save() error {
 		return err
 	}
 	// The access secret lives in this directory. On Windows, Go file modes are
-	// ignored and %ProgramData% ACLs default to world-readable - lock the
-	// directory to SYSTEM + Administrators (no-op elsewhere). Best-effort: a
-	// pairing must not fail because ACL surgery did, but say so.
-	if err := secureDir(Dir()); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: couldn't restrict %s permissions: %v\n", Dir(), err)
+	// ignored and %ProgramData% ACLs default to world-readable - make the
+	// directory Administrators' own and lock it to SYSTEM + Administrators
+	// (no-op elsewhere). Not best-effort any more (2026-11-20): Load refuses
+	// a config in a folder others could write, so a pairing saved into one
+	// would be dropped at the next start; failing now says so in time.
+	if err := secure(Dir()); err != nil {
+		return fmt.Errorf("couldn't limit %s to SYSTEM and Administrators (%v), so the pairing wasn't saved", Dir(), err)
 	}
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
-	// Atomic: temp + rename, same discipline as the gate file itself.
-	tmp := Path() + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, Path())
+	// Atomic and durable (temp + fsync + rename), the same discipline as the
+	// gate file itself: a power cut mid-save must leave the old pairing, never
+	// an empty config that drops the machine back into setup mode.
+	return fsutil.WriteFileAtomic(Path(), b, 0o600)
 }
 
 func (c *Config) Validate() error {

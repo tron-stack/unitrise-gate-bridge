@@ -6,8 +6,16 @@
 # After the release is live, point the backend at it (Render env):
 #   GATE_BRIDGE_DOWNLOAD_BASE=https://github.com/tron-stack/unitrise-gate-bridge/releases/latest/download
 #   GATE_AGENT_LATEST_VERSION=<the version you tagged, no leading v>
-# The "latest/download" base never changes between releases - only the
-# version env moves per release.
+# The "latest/download" base serves the installer links. Self-updates come
+# from the VERSIONED folder (.../releases/download/v<version>/), the only
+# place the agent accepts them from.
+#
+# RELEASE SIGNATURE: agents install a self-update only when SHA256SUMS.sig
+# verifies against the public key compiled into them (release-signing.pub,
+# committed). The private key is the repository secret RELEASE_SIGNING_KEY
+# (its file content: 64 hex characters, or an OpenSSL Ed25519 PEM key). Once
+# release-signing.pub is committed, a release without the secret FAILS here
+# rather than shipping a release no agent will install.
 name: release
 
 on:
@@ -30,8 +38,24 @@ jobs:
       - name: Vet + tests
         run: make test
 
-      - name: Build all platforms (version = tag without the v)
-        run: make release VERSION="${GITHUB_REF_NAME#v}"
+      - name: Build all platforms and sign SHA256SUMS (version = tag without the v)
+        env:
+          RELEASE_SIGNING_KEY_CONTENT: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -f release-signing.pub ] && [ -z "$RELEASE_SIGNING_KEY_CONTENT" ]; then
+            echo "release-signing.pub is committed but the RELEASE_SIGNING_KEY secret is not set - agents would refuse this release."
+            exit 1
+          fi
+          if [ -n "$RELEASE_SIGNING_KEY_CONTENT" ]; then
+            umask 077
+            KEY_FILE="$RUNNER_TEMP/release-signing.key"
+            printf '%s\n' "$RELEASE_SIGNING_KEY_CONTENT" > "$KEY_FILE"
+            make release VERSION="${GITHUB_REF_NAME#v}" RELEASE_SIGNING_KEY="$KEY_FILE"
+            rm -f "$KEY_FILE"
+            test -f dist/SHA256SUMS.sig
+          else
+            make release VERSION="${GITHUB_REF_NAME#v}"
+          fi
 
       - name: Publish GitHub release
         env:

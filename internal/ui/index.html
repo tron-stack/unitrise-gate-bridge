@@ -87,7 +87,7 @@
   <div class="statusband" id="updateBand" style="display:none;border-color:var(--gold)">
     <span class="dot" style="background:var(--gold);box-shadow:0 0 0 4px var(--gold-wash)"></span>
     <div class="msg"><span>Agent update available: <span id="updVer"></span></span>
-      <small id="updMsg">Downloads, verifies the checksum, and restarts the agent - takes under a minute; the gate keeps admitting throughout.</small></div>
+      <small id="updMsg">Downloads, checks UnitRise's release signature and the checksum, and restarts the agent - takes under a minute; the gate keeps admitting throughout.</small></div>
     <button class="pill" id="updBtn">Install update</button>
   </div>
 
@@ -109,6 +109,7 @@
     </div>
     <details style="margin:10px 0 0"><summary style="cursor:pointer;color:var(--muted);font-size:12px">Advanced</summary>
       <div class="pgrid" style="margin-top:8px"><label>API endpoint <small>(only when support says so)</small><input id="pEndpoint" placeholder="https://api.unitrise.com" autocomplete="off" /></label></div>
+      <p style="margin:8px 0 0;color:var(--muted);font-size:12px">This page connects to UnitRise's own server. A different server, or a different save folder on a machine that is already connected, is set by an Administrator with <code>unitrise-gate pair</code> from an Administrator prompt.</p>
     </details>
     <div style="display:flex;align-items:center;gap:10px;margin-top:14px">
       <button class="pill" id="pairBtn" style="margin-left:0">Verify &amp; save</button>
@@ -148,7 +149,7 @@
   <div class="card logcard" id="rosterCard" style="display:none">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
       <h2 style="margin:0">Gate codes <span id="rosterCount" style="font-weight:400;text-transform:none;letter-spacing:0"></span></h2>
-      <input id="rosterQ" placeholder="Filter by unit, tenant, or code…" style="margin-left:auto;max-width:260px;padding:7px 12px;border:1px solid var(--line);border-radius:10px;font:13px/1.4 inherit;color:var(--ink);background:var(--card-soft)" />
+      <input id="rosterQ" placeholder="Filter by unit, tenant, or a code's last two digits…" style="margin-left:auto;max-width:260px;padding:7px 12px;border:1px solid var(--line);border-radius:10px;font:13px/1.4 inherit;color:var(--ink);background:var(--card-soft)" />
     </div>
     <div style="max-height:300px;overflow:auto;border:1px solid var(--line);border-radius:12px">
       <table style="width:100%;border-collapse:collapse;font-size:13px">
@@ -159,8 +160,9 @@
       </table>
     </div>
     <p style="margin:10px 0 0;color:var(--muted);font-size:11px">
-      This is what the gate file currently contains. Codes are added, suspended, and removed from the
-      property's UnitRise console - changes land here on the next sync.
+      This is what the gate file currently contains. Codes show only their last two digits, because this page
+      has no sign-in; the full codes are in the property's UnitRise console, where codes are added, suspended,
+      and removed - changes land here on the next sync.
     </p>
   </div>
 
@@ -272,6 +274,11 @@
     pairOpen = open;
     $("pairCard").style.display = open ? "" : "none";
     $("pairTitle").textContent = setupMode ? "Connect to UnitRise" : "Update credentials";
+    if (!setupMode) {
+      $("pairIntro").textContent = "Paste the new access key and secret from the property's Gate card in UnitRise. " +
+        "This page can only replace those two: the facility, the save folder and the server stay as they are " +
+        "(an Administrator changes them with unitrise-gate pair from an Administrator prompt).";
+    }
     $("pairToggle").textContent = open ? "Cancel" : "Update credentials";
   }
   $("pairToggle").onclick = () => showPair(!pairOpen, false);

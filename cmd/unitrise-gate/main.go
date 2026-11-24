@@ -7,12 +7,12 @@
 // suspensions, code generation - lives in the cloud; this binary is dumb on
 // purpose.
 //
-//	unitrise-gate pair        connect this machine (flags; routes via the running agent)
+//	unitrise-gate pair        connect this machine (flags; a key rotation goes through the running agent, a new server or folder needs an Administrator)
 //	unitrise-gate test        verify credentials + write a probe file
 //	unitrise-gate run         foreground loop (also the service entrypoint)
 //	unitrise-gate force       one full update now, then exit
 //	unitrise-gate ui          open the local dashboard in a browser
-//	unitrise-gate update      download + swap in the latest published agent
+//	unitrise-gate update      download, verify (signed release) + swap in the latest agent
 //	unitrise-gate service …   install | uninstall | start | stop
 //	unitrise-gate help | version
 package main
@@ -21,6 +21,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -64,7 +65,11 @@ Setup (on the gate computer - or just double-click the exe on Windows):
   install    install on this machine: service + tray icon + setup page (Windows)
   pair       connect this machine: pair --key K --secret S --facility F --save C:\PTI
              (values from the console's Gate hardware card; the window's
-             pairing form is the same thing with a UI)
+             pairing form is the same thing with a UI). --secret - reads the
+             secret from standard input so it stays out of your shell history:
+               type secret.txt | unitrise-gate pair --secret - --key K ...
+             A different facility, server (--endpoint) or save folder needs
+             an Administrator prompt.
   test       verify the connection (asks the running service when one is up)
   service    install | uninstall | start | stop   (Windows service / launchd)
 
@@ -127,10 +132,16 @@ func main() {
 		err = openUI()
 	case "update":
 		err = updateCmd()
+	case "secure-config":
+		err = secureConfigCmd()
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 	case "version", "--version", "-v":
-		fmt.Printf("unitrise-gate %s (contract %s, %s/%s)\n", api.AgentVersion, api.ContractVersion, runtime.GOOS, runtime.GOARCH)
+		signing := "built in"
+		if !update.HasSigningKey() {
+			signing = "NOT built in - this build refuses every self-update"
+		}
+		fmt.Printf("unitrise-gate %s (contract %s, %s/%s; update signing key %s)\n", api.AgentVersion, api.ContractVersion, runtime.GOOS, runtime.GOARCH, signing)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
 		usage(os.Stderr)
@@ -151,46 +162,33 @@ func newLogger(c *config.Config) (*logging.Logger, error) {
 }
 
 // pairFromDashboard is the dashboard's pairing hook: build a candidate
-// config (preserving local-only knobs from any existing file), refuse it
+// config under the dashboard's rules (pairing.go planDashboardPair: on a
+// paired machine only the access key and secret may change), refuse it
 // unless the credentials AND the save folder prove out LIVE - the same bar
 // as `pair` + `test` - and only then persist it. Nothing unproven is ever
 // saved, and every (re)pair is logged loudly.
 func pairFromDashboard(req ui.PairRequest, log *logging.Logger) (ui.PairResult, *config.Config, error) {
-	c := &config.Config{APIEndpoint: config.DefaultAPIEndpoint}
-	if old, err := config.Load(); err == nil {
-		c = old // keep UIPort/LogFile/poll/file-name overrides
+	old, lerr := config.Load() // nil when unpaired (or unreadable)
+	if errors.Is(lerr, config.ErrUntrusted) {
+		// Something other than SYSTEM or an Administrator could have written
+		// the folder since the agent started: quarantine it, then pair as a
+		// fresh machine (the planted values are never the "stored" ones).
+		log.Errorf("%v", lerr)
+		res, perr := config.Prepare()
+		log.Errorf("%s", res.Summary())
+		if perr != nil {
+			return ui.PairResult{}, nil, fmt.Errorf("the config folder can't be trusted and couldn't be cleaned (%v) - an Administrator must delete %s", perr, config.Dir())
+		}
+		old = nil
 	}
-	// A paired machine accepts an UNAUTHENTICATED re-pair only for ITS OWN
-	// facility (credential rotation - the dashboard's designed flow). Moving
-	// the box to a DIFFERENT facility through the open loopback API would
-	// hand any local process a lever to point this machine at a facility
-	// whose consume command THEY control - executed by this agent, possibly
-	// as SYSTEM - while the real facility silently stops getting suspensions
-	// (audit 2026-09-07 H2). Changing facilities requires local admin: an
-	// elevated `unitrise-gate pair` (which writes the protected config
-	// directly, with no agent running it falls back there), or reinstall.
-	if c.FacilityID != "" && strings.TrimSpace(req.FacilityID) != "" && strings.TrimSpace(req.FacilityID) != c.FacilityID {
-		return ui.PairResult{}, nil, fmt.Errorf(
-			"this machine is paired to a different facility - changing facilities needs an Administrator: run `unitrise-gate service stop` then `unitrise-gate pair --key … --secret … --facility … --save …` from an Administrator prompt")
-	}
-	c.AccessKey = strings.TrimSpace(req.AccessKey)
-	c.AccessSecret = strings.TrimSpace(req.AccessSecret)
-	c.FacilityID = strings.TrimSpace(req.FacilityID)
-	if p := strings.TrimSpace(req.SavePath); p != "" {
-		c.SavePath = p
-	}
-	if e := config.NormalizeEndpoint(req.APIEndpoint); e != "" {
-		c.APIEndpoint = e
-	} else {
-		c.APIEndpoint = config.NormalizeEndpoint(c.APIEndpoint)
-	}
-	if err := c.Validate(); err != nil {
+	c, err := planDashboardPair(old, req, devMode(), runtime.GOOS == "windows")
+	if err != nil {
 		return ui.PairResult{}, nil, err
 	}
 	st, _, err := api.New(c).GetState("")
 	if err != nil {
 		if strings.Contains(err.Error(), "no such host") {
-			return ui.PairResult{}, nil, fmt.Errorf("can't reach %s (%v) - check this machine's internet, or set the API endpoint under Advanced", c.APIEndpoint, err)
+			return ui.PairResult{}, nil, fmt.Errorf("can't reach %s (%v) - check this machine's internet connection", c.APIEndpoint, err)
 		}
 		return ui.PairResult{}, nil, fmt.Errorf("credentials check failed: %v", err)
 	}
@@ -205,7 +203,7 @@ func pairFromDashboard(req ui.PairRequest, log *logging.Logger) (ui.PairResult, 
 	if err := c.Save(); err != nil {
 		return ui.PairResult{}, nil, fmt.Errorf("saving the pairing: %v", err)
 	}
-	log.Infof("paired from the dashboard: facility %q (%s), save path %s", st.Facility.Name, st.Provider, c.SavePath)
+	log.Infof("paired from the dashboard: facility %q (%s), save path %s, server %s", st.Facility.Name, st.Provider, c.SavePath, c.APIEndpoint)
 	return ui.PairResult{FacilityName: st.Facility.Name, Provider: st.Provider, CodeCount: len(st.Credentials)}, c, nil
 }
 
@@ -226,10 +224,9 @@ func run(forceOnce bool) error {
 	// tray points at it). This also stops an unpaired service from crash-
 	// looping under SCM recovery. `force` still demands a pairing: it exists
 	// to push a real cycle.
-	cfg, cfgErr := config.Load()
-	if cfgErr == nil {
-		cfgErr = cfg.Validate()
-	}
+	// The config folder is made trustworthy (or quarantined) BEFORE anything
+	// is read from it, the log included (pairing.go startupConfig).
+	cfg, startNotes, cfgErr := startupConfig(isElevated(), config.Prepare, config.Load)
 	if cfgErr != nil {
 		if forceOnce {
 			return fmt.Errorf("no valid config (%v) - pair first (dashboard or `unitrise-gate pair`)", cfgErr)
@@ -248,6 +245,13 @@ func run(forceOnce bool) error {
 	defer log.Close()
 	status.Init(api.AgentVersion)
 	logging.Hook = status.AppendLog
+	for _, n := range startNotes {
+		log.Errorf("%s", n)
+	}
+	setupDetail := "waiting for credentials"
+	if len(startNotes) > 0 {
+		setupDetail = strings.Join(startNotes, " ")
+	}
 
 	// The dashboard serves across pairings: force routes to the CURRENT
 	// syncer, and a successful pair lands on pairCh to (re)start the loop.
@@ -319,7 +323,7 @@ func run(forceOnce bool) error {
 			if cfg == nil {
 				status.Update(func(v *status.Snapshot) {
 					v.Paired, v.State, v.OK = false, "setup", true
-					v.Detail = "waiting for credentials"
+					v.Detail = setupDetail
 				})
 				log.Infof("setup mode: not paired yet - enter the credentials on the local dashboard")
 				select {
@@ -414,6 +418,29 @@ func updateCmd() error {
 		return err
 	}
 	fmt.Println(msg)
+	return nil
+}
+
+// secureConfigCmd is the installers' step before the service exists: make
+// %ProgramData%\UnitRiseGateBridge Administrators' own, limit it to SYSTEM and
+// Administrators, and clear out anything somebody else could have planted
+// there (config.Prepare). Needs an Administrator prompt.
+func secureConfigCmd() error {
+	if !isElevated() {
+		return fmt.Errorf("secure-config needs an Administrator prompt")
+	}
+	res, err := config.Prepare()
+	if err != nil {
+		if res.Problem != "" {
+			fmt.Println(res.Problem + ".")
+		}
+		return err
+	}
+	if res.Problem != "" {
+		fmt.Println("WARNING: " + res.Summary())
+		return nil
+	}
+	fmt.Printf("%s %s\n", check(), res.Summary())
 	return nil
 }
 
@@ -513,21 +540,32 @@ func agentPost(base, path string, body any, timeout time.Duration) (string, erro
 // interactive prompts: the Windows exe is a GUI-subsystem image, and cmd.exe
 // doesn't wait for those, so stdin prompts race the shell's own prompt (the
 // on-site symptom 2026-09-07: every typed answer became a "not recognized"
-// cmd error). When the agent is running, pairing routes through its /api/pair
-// - live-validated, saved by the service itself, no Administrator needed.
+// cmd error). `--secret -` reads the secret from a PIPE instead, so it stays
+// out of the shell's history.
+//
+// Which route it takes (pairing.go choosePairRoute): a new key and secret,
+// or a first pairing with UnitRise's own server, go through the running
+// agent's /api/pair (live-validated, saved by the service, no Administrator
+// needed); a different facility, server or save folder is written to the
+// protected config.json directly, which needs an Administrator prompt, and
+// the running service is restarted onto it.
 func pair() error {
 	fs := flag.NewFlagSet("pair", flag.ContinueOnError)
 	key := fs.String("key", "", "access key from the console's Gate hardware card")
-	secret := fs.String("secret", "", "access secret")
+	secret := fs.String("secret", "", "access secret (\"-\" reads it from standard input, so it stays out of the shell history)")
 	facility := fs.String("facility", "", "facility ID")
 	save := fs.String("save", "", `folder the gate software watches (e.g. C:\PTI)`)
-	endpoint := fs.String("endpoint", "", "API endpoint (only when support says so)")
+	endpoint := fs.String("endpoint", "", "API endpoint (only when support says so; needs an Administrator prompt)")
 	if err := fs.Parse(os.Args[2:]); err != nil {
+		return err
+	}
+	secretVal, err := readSecretFlag(*secret, os.Stdin)
+	if err != nil {
 		return err
 	}
 	base, snap := findLocalAgent()
 
-	if *key == "" && *secret == "" && *facility == "" && *save == "" {
+	if *key == "" && secretVal == "" && *facility == "" && *save == "" && *endpoint == "" {
 		if snap != nil && snap.isPaired() {
 			where := snap.FacilityName
 			if where == "" {
@@ -540,17 +578,33 @@ func pair() error {
 		}
 		fmt.Println("Pairing takes the four values from the console's Gate hardware card:")
 		fmt.Println("  unitrise-gate pair --key K --secret S --facility F --save C:\\PTI [--endpoint URL]")
+		fmt.Println("  (--secret - reads the secret from standard input instead of the command line)")
 		fmt.Println("Easiest path: open the Gate Bridge window - its pairing form does the same thing.")
 		return fmt.Errorf("missing --key/--secret/--facility/--save")
 	}
 
-	// The running agent validates LIVE and saves as the service - the config
-	// directory is service-only, so this is the path that works unelevated.
-	if base != "" {
+	cfg, loadErr := config.Load()
+	if errors.Is(loadErr, config.ErrUntrusted) && isElevated() {
+		fmt.Println(loadErr.Error() + ".")
+		res, err := config.Prepare()
+		fmt.Println(res.Summary())
+		if err != nil {
+			return err
+		}
+		cfg, loadErr = config.Load()
+	}
+	fold := runtime.GOOS == "windows"
+	route := choosePairRoute(loadErr == nil, os.IsNotExist(loadErr), isElevated(), base != "",
+		pairMoves(cfg, *facility, *endpoint, *save, fold))
+
+	switch route {
+	case routeAgent:
+		// The running agent validates LIVE and saves as the service - the
+		// config directory is service-only, so this works unelevated.
 		fmt.Println("verifying with UnitRise (via the running agent)…")
 		_, err := agentPost(base, "/api/pair", map[string]string{
 			"accessKey":    strings.TrimSpace(*key),
-			"accessSecret": strings.TrimSpace(*secret),
+			"accessSecret": strings.TrimSpace(secretVal),
 			"facilityId":   strings.TrimSpace(*facility),
 			"savePath":     strings.TrimSpace(*save),
 			"apiEndpoint":  strings.TrimSpace(*endpoint),
@@ -560,11 +614,11 @@ func pair() error {
 		}
 		fmt.Printf("%s connected - the agent is syncing.\n", check())
 		return nil
+	case routeNeedAdmin:
+		return fmt.Errorf("this change needs an Administrator prompt: the config folder is restricted to Administrators, and a different facility, server or save folder can't be set through the running agent")
 	}
 
-	// No agent running: write the config directly (needs an Administrator
-	// prompt - the directory is locked to SYSTEM + Administrators).
-	cfg, _ := config.Load()
+	// routeDirect: an Administrator writes the protected config.json itself.
 	if cfg == nil {
 		cfg = &config.Config{APIEndpoint: config.DefaultAPIEndpoint}
 	}
@@ -574,7 +628,7 @@ func pair() error {
 		}
 	}
 	set(&cfg.AccessKey, *key)
-	set(&cfg.AccessSecret, *secret)
+	set(&cfg.AccessSecret, secretVal)
 	set(&cfg.FacilityID, *facility)
 	set(&cfg.SavePath, *save)
 	if strings.TrimSpace(*endpoint) != "" {
@@ -584,10 +638,38 @@ func pair() error {
 		return err
 	}
 	if err := cfg.Save(); err != nil {
-		return fmt.Errorf("%w\n(the config folder is restricted - run this from an Administrator prompt, or start the service and re-run)", err)
+		return fmt.Errorf("%w\n(the config folder is restricted - run this from an Administrator prompt)", err)
 	}
-	fmt.Printf("%s saved %s\nnext: unitrise-gate test\n", check(), config.Path())
+	fmt.Printf("%s saved %s\n", check(), config.Path())
+	if base == "" {
+		fmt.Println("next: unitrise-gate test")
+		return nil
+	}
+	// The running agent still holds the old pairing: restart it onto this one.
+	fmt.Println("restarting the service so it uses the new pairing…")
+	if err := restartService(); err != nil {
+		return fmt.Errorf("the pairing is saved, but the service didn't restart (%v) - run: unitrise-gate service stop, then unitrise-gate service start", err)
+	}
+	fmt.Printf("%s the service restarted on the new pairing - check it with: unitrise-gate test\n", check())
 	return nil
+}
+
+// restartService stops the service, waits until it has really stopped (a
+// start sent while it is still stopping is answered "already running" and
+// would leave it stopped), and starts it again.
+func restartService() error {
+	if err := service.Stop(); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		b, _ := findLocalAgent()
+		if st := service.Status(); b == "" && st != "running" && st != "stopping" {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return service.Start()
 }
 
 // test = the Gate Settings "Test" button: prove credentials AND prove we can

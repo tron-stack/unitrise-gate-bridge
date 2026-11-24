@@ -4,9 +4,14 @@
 //	every N seconds (default 300):
 //	  pull desired state (ETag-cheap when nothing changed)
 //	  render the vendor file
-//	  ATOMIC write into the watched folder (temp + rename - never half a file)
+//	  ATOMIC write into the watched folder (temp + fsync + rename - never
+//	  half a file, never an empty one after a power cut)
 //	  run the consume command, capture its output   (the Ptisend.bat pattern)
 //	  report applied + heartbeat
+//
+// and, on its own clock every 60-90 seconds, a heartbeat: the console calls
+// an agent offline after 10 minutes without one, and a site can poll as
+// rarely as once an hour.
 //
 // Failure never destroys the last good file: if anything errs, the previous
 // file stays in place, the gate keeps admitting from its last list, and the
@@ -22,11 +27,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/api"
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/config"
+	"github.com/mytruckyards/unitrise-gate-bridge/internal/fsutil"
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/logging"
+	"github.com/mytruckyards/unitrise-gate-bridge/internal/mask"
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/render"
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/status"
 )
@@ -38,17 +46,45 @@ type Syncer struct {
 	client *api.Client
 	log    *logging.Logger
 
+	// etag is the hash of the last state applied in full (Run's goroutine
+	// only): the next fetch sends it so an unchanged state is a cheap 304.
+	etag string
+
+	// What the heartbeat reports, read by its own goroutine too.
+	mu          sync.Mutex
 	lastHash    string
 	lastApplyAt time.Time
+	lastOK      bool
+	lastDetail  string
+	cycled      bool // a cycle has finished, so lastOK/lastDetail mean something
+
 	// Force makes the next cycle re-apply even on 304 (the "Force Full
 	// Update" menu action).
 	force chan struct{}
+
+	// heartbeatEvery is the gap between heartbeats on their own clock;
+	// nil = heartbeatInterval (60-90 s). Tests shorten it.
+	heartbeatEvery func() time.Duration
+
+	// ownFilesPath records the files the agent wrote under its own default
+	// names (ownfiles.go); empty = not tracked.
+	ownFilesPath string
 }
 
 func New(cfg *config.Config, log *logging.Logger) *Syncer {
 	// The template renderer's delta memory lives beside the config file.
 	render.RosterPath = filepath.Join(config.Dir(), "last-roster.json")
-	return &Syncer{cfg: cfg, client: api.New(cfg), log: log, force: make(chan struct{}, 1)}
+	return &Syncer{
+		cfg: cfg, client: api.New(cfg), log: log, force: make(chan struct{}, 1),
+		ownFilesPath: filepath.Join(config.Dir(), "own-files.json"),
+	}
+}
+
+// heartbeatInterval is 60-90 seconds, spread so a fleet that lost the same
+// uplink doesn't report back in lockstep. Well inside the server's 10-minute
+// online window whatever the poll interval is.
+func heartbeatInterval() time.Duration {
+	return 60*time.Second + time.Duration(time.Now().UnixNano()%int64(30*time.Second))
 }
 
 func (s *Syncer) ForceFullUpdate() {
@@ -62,6 +98,7 @@ func (s *Syncer) ForceFullUpdate() {
 // Run blocks until ctx is done.
 func (s *Syncer) Run(ctx context.Context) {
 	s.log.Infof("agent %s starting (os %s/%s, contract %s)", api.AgentVersion, runtime.GOOS, runtime.GOARCH, api.ContractVersion)
+	go s.heartbeatLoop(ctx)
 	poll := defaultPoll
 	if s.cfg.PollSeconds > 0 {
 		poll = time.Duration(s.cfg.PollSeconds) * time.Second
@@ -79,7 +116,7 @@ func (s *Syncer) Run(ctx context.Context) {
 			s.log.Infof("shutting down")
 			return
 		case <-s.force:
-			s.lastHash = "" // drop the ETag so the next fetch is a full 200
+			s.etag = "" // drop the ETag so the next fetch is a full 200
 			s.safeCycle(&poll, &failures)
 		case <-timer.C:
 			s.safeCycle(&poll, &failures)
@@ -102,6 +139,57 @@ func (s *Syncer) Run(ctx context.Context) {
 			st.NextPollAt = time.Now().Add(next)
 		})
 		timer.Reset(next)
+	}
+}
+
+// heartbeatLoop sends a heartbeat on its own clock (60-90 s), independent of
+// the poll: with pollSeconds above 600 the server used to mark a healthy
+// agent offline between polls. It starts reporting once the first cycle has
+// finished, so it never claims a sync that hasn't happened.
+func (s *Syncer) heartbeatLoop(ctx context.Context) {
+	every := s.heartbeatEvery
+	if every == nil {
+		every = heartbeatInterval
+	}
+	t := time.NewTimer(every())
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		s.mu.Lock()
+		ready := s.cycled
+		s.mu.Unlock()
+		if ready {
+			s.sendHeartbeat()
+		}
+		t.Reset(every())
+	}
+}
+
+// heartbeat is what the agent reports right now.
+func (s *Syncer) heartbeat() api.Heartbeat {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hb := api.Heartbeat{
+		AgentVersion:  api.AgentVersion,
+		OS:            runtime.GOOS + "/" + runtime.GOARCH,
+		LastApplyHash: s.lastHash,
+		OK:            s.lastOK,
+		Detail:        s.lastDetail,
+	}
+	if !s.lastApplyAt.IsZero() {
+		at := s.lastApplyAt
+		hb.LastApplyAt = &at
+	}
+	return hb
+}
+
+func (s *Syncer) sendHeartbeat() {
+	if err := s.client.SendHeartbeat(s.heartbeat()); err != nil {
+		s.log.Errorf("heartbeat: %v", err)
 	}
 }
 
@@ -132,7 +220,7 @@ func (s *Syncer) safeCycle(poll *time.Duration, failures *int) {
 
 func (s *Syncer) cycle(poll *time.Duration) bool {
 	ok, detail := true, ""
-	st, hash, err := s.client.GetState(s.lastHash)
+	st, hash, err := s.client.GetState(s.etag)
 	switch {
 	case err != nil:
 		ok, detail = false, "state fetch: "+err.Error()
@@ -157,30 +245,40 @@ func (s *Syncer) cycle(poll *time.Duration) bool {
 		if err := s.apply(st); err != nil {
 			ok, detail = false, "apply: "+err.Error()
 			s.log.Errorf("%s", detail)
+			// Next fetch is a full one even if the state goes back to the
+			// last applied hash: the file on disk now says something else.
+			s.etag = ""
 		} else {
+			s.etag = st.StateHash
+			s.mu.Lock()
 			s.lastHash = st.StateHash
 			s.lastApplyAt = time.Now()
+			s.mu.Unlock()
 		}
 	}
+	s.mu.Lock()
+	s.lastOK, s.lastDetail, s.cycled = ok, detail, true
+	lastApplyAt, lastHash := s.lastApplyAt, s.lastHash
+	s.mu.Unlock()
 	status.Update(func(v *status.Snapshot) {
 		v.OK = ok
 		v.Detail = detail
-		v.LastApplyAt = s.lastApplyAt
-		v.LastHash = s.lastHash
+		v.LastApplyAt = lastApplyAt
+		v.LastHash = lastHash
 	})
-
-	hb := api.Heartbeat{
-		AgentVersion:  api.AgentVersion,
-		OS:            runtime.GOOS + "/" + runtime.GOARCH,
-		LastApplyAt:   s.lastApplyAt,
-		LastApplyHash: s.lastHash,
-		OK:            ok,
-		Detail:        detail,
-	}
-	if err := s.client.SendHeartbeat(hb); err != nil {
-		s.log.Errorf("heartbeat: %v", err)
-	}
+	// One heartbeat right after every cycle (the console sees a failure at
+	// once), plus heartbeatLoop's own clock in between.
+	s.sendHeartbeat()
 	return ok
+}
+
+// consumeSetting is the consume command in force: this PC's override, else
+// the server's. Empty = none.
+func (s *Syncer) consumeSetting(st *api.State) (name string, local bool) {
+	if s.cfg.ConsumeCommand != "" {
+		return s.cfg.ConsumeCommand, true
+	}
+	return st.Settings.ConsumeCommand, false
 }
 
 func (s *Syncer) apply(st *api.State) error {
@@ -202,6 +300,17 @@ func (s *Syncer) apply(st *api.State) error {
 	if err != nil {
 		return err
 	}
+	// With NO consume command the gate software takes the file itself: the
+	// last write counts as imported once the file is gone from its path.
+	// Checked BEFORE rendering, because delta formats diff against what the
+	// gate software has taken (internal/render, 2026-11-20).
+	if cmdName, _ := s.consumeSetting(st); cmdName == "" {
+		if took, err := render.ConfirmIfTaken(); err != nil {
+			s.log.Errorf("roster: %v", err)
+		} else if took {
+			s.log.Infof("the gate software took the last file")
+		}
+	}
 	data, err := r.Render(st)
 	if err != nil {
 		return fmt.Errorf("render %s: %w", st.Provider, err)
@@ -210,17 +319,22 @@ func (s *Syncer) apply(st *api.State) error {
 	if err := os.MkdirAll(s.cfg.SavePath, 0o755); err != nil {
 		return fmt.Errorf("save path: %w", err)
 	}
-	// Atomic replace: the gate software must never observe a partial file.
-	tmp := target + ".unitrise-tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	// Atomic and durable: the gate software must never observe a partial
+	// file, nor an empty one after a power cut (fsync before the rename).
+	if err := fsutil.WriteFileAtomic(target, data, 0o644); err != nil {
 		return fmt.Errorf("write: %w", err)
 	}
-	if err := os.Rename(tmp, target); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("rename into place: %w", err)
-	}
 	s.log.Infof("wrote %s (%d bytes)", target, len(data))
-	// The "Gate codes" view: what the file now carries, per credential.
+	// The file landed: what it tells the gate is PENDING until the gate
+	// software takes it (the consume command exits 0, or the file goes).
+	recorded := true
+	if err := render.RecordWritten(target, data); err != nil {
+		recorded = false // the confirmed roster stays: the next diff is a superset
+		s.log.Errorf("roster save: %v", err)
+	}
+	// The "Gate codes" view: what the file now carries, per credential
+	// (status.SetRoster masks every code - the local dashboard has no
+	// sign-in).
 	rows := make([]status.RosterRow, 0, len(st.Credentials))
 	for _, c := range st.Credentials {
 		rows = append(rows, status.RosterRow{
@@ -229,14 +343,19 @@ func (s *Syncer) apply(st *api.State) error {
 		})
 	}
 	status.SetRoster(rows)
-	// The file is the interface: now that it landed, remember what it told
-	// the gate (delta formats diff against this next cycle).
-	if err := render.CommitApplied(); err != nil {
-		s.log.Errorf("roster save: %v", err)
-	}
+	// The agent's own test file (and GATECODES.TXT) left behind once the
+	// output moved elsewhere carries every code: remove it.
+	s.cleanOwnFiles(target, data)
 	status.Update(func(v *status.Snapshot) { v.TargetFile = target })
 
 	exit, out := s.consume(st)
+	if exit == 0 && recorded {
+		// The gate software imported the file: the pending roster is now
+		// what the gate has.
+		if err := render.ConfirmWritten(); err != nil {
+			s.log.Errorf("roster confirm: %v", err)
+		}
+	}
 	status.Update(func(v *status.Snapshot) {
 		v.ConsumeExit = exit
 		if exit != -1 {
@@ -259,8 +378,12 @@ func (s *Syncer) apply(st *api.State) error {
 	// A configured consume command that fails IS a failed sync: the file
 	// landed, but the gate never got it (on-site 2026-09-06: a mistyped
 	// Ptisend.bat left the dashboard green "in sync" while the Falcon
-	// received nothing). -1 = no command configured; anything else nonzero
-	// turns the dashboard/tray red with the command's own output.
+	// received nothing). -1 = no command configured; -2 = refused or failed
+	// to start; anything else nonzero turns the dashboard/tray red with the
+	// command's own output.
+	if exit == -2 {
+		return fmt.Errorf("%s The gate file was written, but its import wasn't run.", asSentence(out))
+	}
 	if exit != -1 && exit != 0 {
 		msg := fmt.Sprintf("consume command failed (exit %d)", exit)
 		if o := strings.TrimSpace(out); o != "" {
@@ -274,17 +397,31 @@ func (s *Syncer) apply(st *api.State) error {
 	return nil
 }
 
+// asSentence capitalizes a reason and ends it with a full stop.
+func asSentence(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "The import file couldn't be run."
+	}
+	s = strings.ToUpper(s[:1]) + s[1:]
+	if !strings.HasSuffix(s, ".") {
+		s += "."
+	}
+	return s
+}
+
 // consume runs the vendor's import trigger (e.g. PTI's Ptisend.bat), if one is
 // configured. Exit code -1 = no command configured; -2 = refused or failed to
 // start. The command is a plain .bat, .cmd or .exe file name, run from the
 // save folder as the file itself - never a command line, never through a
 // shell (consume.go, ED-6). A full path or a command with arguments, which an
 // older agent accepted, is refused in words and nothing runs.
+//
+// The process output is masked before it is logged, shown or sent (every run
+// of three or more digits, internal/mask): a vendor tool can echo the lines it
+// imported, and those are gate codes.
 func (s *Syncer) consume(st *api.State) (int, string) {
-	cmdName, local := st.Settings.ConsumeCommand, false
-	if s.cfg.ConsumeCommand != "" {
-		cmdName, local = s.cfg.ConsumeCommand, true
-	}
+	cmdName, local := s.consumeSetting(st)
 	if cmdName == "" {
 		return -1, ""
 	}
@@ -300,6 +437,7 @@ func (s *Syncer) consume(st *api.State) (int, string) {
 	// can no-op with exit 0 (Falcon site, 2026-09-06). Falls back to the
 	// plain exec when not applicable.
 	if exit, out, ran := runConsumeInSession(full, s.cfg.SavePath, 2*time.Minute); ran {
+		out = mask.DigitRuns(strings.TrimSpace(out))
 		out = strings.TrimSpace(out + "\n[ran in the signed-in user's session]")
 		if len(out) > 2048 {
 			out = out[:2048]
@@ -311,6 +449,15 @@ func (s *Syncer) consume(st *api.State) (int, string) {
 		return exit, out
 	}
 
+	// From here the file runs as THIS process: the system account when the
+	// service runs it with nobody signed in. If an ordinary user could have
+	// changed the file or the files beside it, that is their code running as
+	// SYSTEM, so it doesn't run (acl.go).
+	if refusal := consumeACLRefusal(full); refusal != "" {
+		s.log.Errorf("%s", refusal)
+		return -2, refusal
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	// The file itself, by its full path, with no arguments and no shell.
@@ -319,7 +466,7 @@ func (s *Syncer) consume(st *api.State) (int, string) {
 	cmd := directCommand(ctx, full)
 	cmd.Dir = s.cfg.SavePath
 	outB, err := cmd.CombinedOutput()
-	out := strings.TrimSpace(string(outB))
+	out := mask.DigitRuns(strings.TrimSpace(string(outB)))
 	if len(out) > 2048 {
 		out = out[:2048]
 	}
@@ -331,7 +478,7 @@ func (s *Syncer) consume(st *api.State) (int, string) {
 			return exitErr.ExitCode(), out
 		}
 		s.log.Errorf("consume failed to start: %v", err)
-		return -2, out + "\n" + err.Error()
+		return -2, strings.TrimSpace(out + "\n" + err.Error())
 	}
 	return 0, out
 }

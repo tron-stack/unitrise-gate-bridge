@@ -14,13 +14,26 @@ import (
 
 type testFile struct{}
 
+// TestFileName is the verification renderer's file, and TestFileHeader its
+// first line, written by nothing but this agent (the syncer uses both to
+// remove the agent's own test file once a real format takes over).
+const (
+	TestFileName   = "UNITRISE-GATE-TEST.txt"
+	TestFileHeader = "UnitRise Gate Bridge - TEST OUTPUT (not a real vendor format)"
+)
+
 func init() { Register("unitrise_test", testFile{}) }
 
-func (testFile) FileName() string { return "UNITRISE-GATE-TEST.txt" }
+func (testFile) FileName() string { return TestFileName }
 
 func (testFile) Render(st *api.State) ([]byte, error) {
+	// This file carries no roster: drop one a template render left behind
+	// (a write that failed), so it is never recorded against this file.
+	tmplMu.Lock()
+	pending = nil
+	tmplMu.Unlock()
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "UnitRise Gate Bridge - TEST OUTPUT (not a real vendor format)\n")
+	fmt.Fprintf(&b, "%s\n", TestFileHeader)
 	fmt.Fprintf(&b, "Facility: %s\n", st.Facility.Name)
 	fmt.Fprintf(&b, "Generated: %s\n", time.Now().Format(time.RFC3339))
 	fmt.Fprintf(&b, "State hash: %s\n", st.StateHash)

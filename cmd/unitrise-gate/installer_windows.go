@@ -12,7 +12,8 @@ package main
 //
 // Everything here is idempotent: re-running the installer over an existing
 // install is the update path (stop service, replace exe, start service),
-// and the pairing is never touched.
+// and a pairing only SYSTEM or an Administrator could have written is kept
+// (config.Prepare; one anybody else could have planted is deleted).
 
 import (
 	_ "embed"
@@ -29,6 +30,7 @@ import (
 	"golang.org/x/sys/windows/registry"
 
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/api"
+	"github.com/mytruckyards/unitrise-gate-bridge/internal/config"
 	"github.com/mytruckyards/unitrise-gate-bridge/internal/service"
 )
 
@@ -166,7 +168,7 @@ func runGuiInstall(opts installOpts) {
 	if opts.OpenGuide {
 		exec.Command("notepad", filepath.Join(installDir(), "README.txt")).Start() //nolint:errcheck
 	}
-	msgBox("UnitRise Gate Bridge is installed and running.\n\nLook for the UnitRise icon by the clock - the setup page that just opened walks you through connecting (or shows live status if this machine was already paired).", mbOK|mbIconInfo)
+	msgBox(withNotice("UnitRise Gate Bridge is installed and running.\n\nLook for the UnitRise icon by the clock - the setup page that just opened walks you through connecting (or shows live status if this machine was already paired)."), mbOK|mbIconInfo)
 }
 
 // installCmd installs (or updates) in place. Self-elevates when needed;
@@ -199,7 +201,7 @@ func installCmd() error {
 		report("Install failed: "+err.Error(), true)
 		return errQuiet
 	}
-	report("UnitRise Gate Bridge is installed and running.\n\nLook for the UnitRise icon by the clock - the setup page that just opened walks you through connecting (or shows the live status if this machine was already paired).", false)
+	report(withNotice("UnitRise Gate Bridge is installed and running.\n\nLook for the UnitRise icon by the clock - the setup page that just opened walks you through connecting (or shows the live status if this machine was already paired)."), false)
 	return nil
 }
 
@@ -209,6 +211,17 @@ var errQuiet = fmt.Errorf("")
 
 //go:embed readme_operator.txt
 var operatorReadme []byte
+
+// installNotice is what installSelf found worth telling the person (an
+// untrusted settings folder it emptied), shown with the final message.
+var installNotice string
+
+func withNotice(msg string) string {
+	if installNotice == "" {
+		return msg
+	}
+	return msg + "\n\nNote: " + installNotice
+}
 
 func desktopShortcutPath() string {
 	pub := os.Getenv("PUBLIC")
@@ -272,6 +285,21 @@ func installSelf(opts installOpts, report func(pct int, msg string)) error {
 	if err := addMachinePath(installDir()); err != nil {
 		// PATH is a convenience - never fail the install over it.
 		fmt.Fprintln(os.Stderr, "warning: PATH:", err)
+	}
+
+	// The config folder BEFORE the service exists (2026-11-20): any user can
+	// create a folder in %ProgramData%, and one created first could hand the
+	// service (SYSTEM) a planted pairing. config.Prepare makes it
+	// Administrators' own, limited to SYSTEM and Administrators with
+	// inheritance off; an existing folder that only they could have written
+	// keeps its pairing, anything else is emptied (and said).
+	report(45, "Locking down the settings folder…")
+	prep, err := config.Prepare()
+	if err != nil {
+		return fmt.Errorf("the settings folder %s: %w", config.Dir(), err)
+	}
+	if prep.Problem != "" {
+		installNotice = prep.Summary()
 	}
 
 	report(52, "Registering the background service…")

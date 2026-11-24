@@ -15,7 +15,51 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/mytruckyards/unitrise-gate-bridge/internal/acl"
 )
+
+// platformConsumeACLRefusal is the Windows half of acl.go: when this process
+// runs with rights ordinary users don't have (the service as LocalSystem, or
+// an elevated prompt), read who may change the import file and its folder,
+// and refuse when a broad group can. A permission list that can't be read is
+// a refusal too: the file would otherwise run unchecked as SYSTEM.
+func platformConsumeACLRefusal(full string) string {
+	as := privilegedAs()
+	if as == "" {
+		return "" // an ordinary account: it runs with no more than its own rights
+	}
+	asWords := "as the system account"
+	if as == "admin" {
+		asWords = "with Administrator rights"
+	}
+	folderPath := filepath.Dir(full)
+	folder, err := readObjectACL(folderPath)
+	if err != nil {
+		return fmt.Sprintf("The Bridge couldn't read who can change the import file's folder (%s: %v), so it won't run %s %s. Limit the folder to Administrators, then try Force full update.", folderPath, err, filepath.Base(full), asWords)
+	}
+	file, err := readObjectACL(full)
+	if err != nil {
+		return fmt.Sprintf("The Bridge couldn't read who can change the import file %s (%v), so it won't run it %s.", full, err, asWords)
+	}
+	return consumeRunRefusal(file, folder, as)
+}
+
+// privilegedAs: "system" for LocalSystem, "admin" for an elevated token,
+// "" for an ordinary one.
+func privilegedAs() string {
+	tok := windows.GetCurrentProcessToken()
+	if u, err := tok.GetTokenUser(); err == nil && u.User.Sid != nil && u.User.Sid.IsWellKnown(windows.WinLocalSystemSid) {
+		return "system"
+	}
+	if tok.IsElevated() {
+		return "admin"
+	}
+	return ""
+}
+
+// readObjectACL reads a file's or folder's owner and permission list.
+func readObjectACL(path string) (objectACL, error) { return acl.Read(path) }
 
 // directCommand starts the consume file itself, by its full path, with no
 // arguments and no shell (2026-11-13, part 6 audit ED-6: it used to be free

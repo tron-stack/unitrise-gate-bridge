@@ -55,6 +55,19 @@ var stubs = map[string]bool{
 	"winsen":        true,
 }
 
+// DefaultFileNames are the file names the agent's own renderers write when the
+// server names none (UNITRISE-GATE-TEST.txt, GATECODES.TXT): names no gate
+// software is set up to read, so a stale one in the save folder is only a
+// copy of every code.
+func DefaultFileNames() []string {
+	names := make([]string, 0, len(registry))
+	for _, r := range registry {
+		names = append(names, r.FileName())
+	}
+	sort.Strings(names)
+	return names
+}
+
 func Known() []string {
 	names := make([]string, 0, len(registry)+len(stubs))
 	for n := range registry {

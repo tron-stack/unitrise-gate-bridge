@@ -35,6 +35,17 @@ console (their property, then Gate) and can bring them back up any time.
 The save folder is the directory your gate software imports codes from
 (for PTI systems this is usually C:\PTI).
 
+Once this computer is connected, the dashboard can only replace the access
+key and secret. A different facility, server or save folder is set by an
+Administrator: open an Administrator command prompt and run
+  unitrise-gate pair --key K --secret S --facility F --save C:\PTI
+(--secret - reads the secret from standard input instead).
+
+Keep the save folder limited to Administrators. When nobody is signed in,
+the Bridge runs your gate software's import file as the system account, so
+it won't run it while ordinary users can change the file or its folder, and
+the UnitRise console shows why.
+
 Starting and stopping
 ---------------------
 The sync runs as the Windows service "UnitRise Gate Bridge" (it starts with
@@ -44,8 +55,8 @@ Gate Bridge. Quitting the tray icon never stops the sync.
 Updating
 --------
 When a new version is published, the tray menu and dashboard show a
-one-click "Install update" - it downloads, verifies, and restarts the
-agent in under a minute. The gate keeps admitting from its current list
+one-click "Install update" - it downloads, checks UnitRise's release
+signature and the checksum, and restarts the agent in under a minute. The gate keeps admitting from its current list
 throughout.
 
 Removing

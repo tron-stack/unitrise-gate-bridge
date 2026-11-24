@@ -3,3 +3,7 @@ dist/
 config.json
 .DS_Store
 *.syso
+# The release PRIVATE key never lives in the repository (release-signing.pub,
+# the public half, is committed).
+*.key
+release-signing.key

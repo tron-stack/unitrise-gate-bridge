@@ -87,6 +87,17 @@ func TestModifiersHeaderFooter(t *testing.T) {
 	}
 }
 
+// taken: the file landed and the gate software took it (consume exit 0).
+func taken(t *testing.T) {
+	t.Helper()
+	if err := RecordWritten(filepath.Join(t.TempDir(), "update.txt"), []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ConfirmWritten(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDeltaLifecycle(t *testing.T) {
 	RosterPath = filepath.Join(t.TempDir(), "roster.json")
 	spec := &api.FormatSpec{
@@ -103,18 +114,14 @@ func TestDeltaLifecycle(t *testing.T) {
 	if got != "A,5555,Truck 42,1\n" {
 		t.Fatalf("first delta render: %q", got)
 	}
-	if err := CommitApplied(); err != nil {
-		t.Fatal(err)
-	}
+	taken(t)
 
 	// Unchanged state: an empty diff, never a spurious re-add.
 	got = render(t, tState([]api.Credential{active}, spec, 1))
 	if got != "\n" && got != "" {
 		t.Fatalf("unchanged delta must emit no ops: %q", got)
 	}
-	if err := CommitApplied(); err != nil {
-		t.Fatal(err)
-	}
+	taken(t)
 
 	// Suspension with no suspendedLine = removal op.
 	suspended := active
@@ -123,18 +130,14 @@ func TestDeltaLifecycle(t *testing.T) {
 	if got != "D,5555\n" {
 		t.Fatalf("suspension must emit the remove op: %q", got)
 	}
-	if err := CommitApplied(); err != nil {
-		t.Fatal(err)
-	}
+	taken(t)
 
 	// Restore = add op again.
 	got = render(t, tState([]api.Credential{active}, spec, 1))
 	if got != "A,5555,Truck 42,1\n" {
 		t.Fatalf("restore must emit the add op: %q", got)
 	}
-	if err := CommitApplied(); err != nil {
-		t.Fatal(err)
-	}
+	taken(t)
 
 	// Force nonce change: the whole roster re-emits as adds.
 	got = render(t, tState([]api.Credential{active}, spec, 2))
@@ -148,10 +151,23 @@ func TestRosterCommittedOnlyOnApply(t *testing.T) {
 	RosterPath = filepath.Join(dir, "roster.json")
 	spec := &api.FormatSpec{Mode: "delta", AddedLine: "A,{code}", RemovedLine: "D,{code}", LineEnding: "lf"}
 	_ = render(t, tState([]api.Credential{{Code: "9", Status: "active"}}, spec, 1))
-	// No CommitApplied: the roster file must NOT exist yet - a render whose
+	// No RecordWritten: neither roster file may exist yet - a render whose
 	// file never landed must not poison the next diff.
 	if _, err := os.Stat(RosterPath); err == nil {
-		t.Fatal("roster must only be committed after the vendor file lands")
+		t.Fatal("the confirmed roster must only be written once the gate software took the file")
+	}
+	if _, err := os.Stat(PendingPath()); err == nil {
+		t.Fatal("the pending roster must only be written after the vendor file lands")
+	}
+	// The write landed: pending, NOT confirmed.
+	if err := RecordWritten(filepath.Join(dir, "update.txt"), []byte("A,9\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(PendingPath()); err != nil {
+		t.Fatal("a landed write is recorded as pending")
+	}
+	if _, err := os.Stat(RosterPath); err == nil {
+		t.Fatal("a landed write is NOT confirmed until the gate software takes it")
 	}
 }
 
@@ -263,5 +279,129 @@ func TestVacantLineRendersEveryUnit(t *testing.T) {
 	}
 	if strings.Contains(string(b), "A2") {
 		t.Fatalf("delta output must not carry vacant units, got %q", string(b))
+	}
+}
+
+// The defect this guards (2026-11-20): the roster advanced the moment the
+// file landed, so a consume command that failed still advanced it, and the
+// next cycle REPLACED the unimported file with a diff missing the earlier
+// lines. The next file must carry every change since the CONFIRMED roster.
+func TestAnUnimportedDeltaIsReplacedByASuperset(t *testing.T) {
+	dir := t.TempDir()
+	RosterPath = filepath.Join(dir, "last-roster.json")
+	spec := &api.FormatSpec{Mode: "delta", AddedLine: "A,{code},{unit}", RemovedLine: "D,{code},{unit}", SortBy: "code", LineEnding: "lf"}
+	a := api.Credential{Code: "1111", UnitLabel: "1", Status: "active"}
+	b := api.Credential{Code: "2222", UnitLabel: "2", Status: "active"}
+	c := api.Credential{Code: "3333", UnitLabel: "3", Status: "active"}
+
+	// The gate has A.
+	render(t, tState([]api.Credential{a}, spec, 1))
+	taken(t)
+
+	// B arrives; the file lands, the consume command FAILS (not confirmed).
+	file := filepath.Join(dir, "update.txt")
+	got := render(t, tState([]api.Credential{a, b}, spec, 1))
+	if got != "A,2222,2\n" {
+		t.Fatalf("second render: %q", got)
+	}
+	if err := RecordWritten(file, []byte(got)); err != nil {
+		t.Fatal(err)
+	}
+
+	// C arrives and A is suspended away: the next file still carries B.
+	got = render(t, tState([]api.Credential{b, c}, spec, 1))
+	if got != "D,1111,1\nA,2222,2\nA,3333,3\n" {
+		t.Fatalf("the replacement must carry every change since the confirmed roster, got %q", got)
+	}
+	if err := RecordWritten(file, []byte(got)); err != nil {
+		t.Fatal(err)
+	}
+	// Now the import succeeds: the confirmed roster is the last file's.
+	if err := ConfirmWritten(); err != nil {
+		t.Fatal(err)
+	}
+	if got = render(t, tState([]api.Credential{b, c}, spec, 1)); got != "\n" && got != "" {
+		t.Fatalf("after the import is confirmed nothing is resent: %q", got)
+	}
+}
+
+// With no consume command the gate software takes the file itself: it is
+// confirmed once the file is gone (removed or renamed), never while it sits
+// there.
+func TestNoConsumeConfirmsOnlyWhenTheFileIsGone(t *testing.T) {
+	dir := t.TempDir()
+	RosterPath = filepath.Join(dir, "last-roster.json")
+	spec := &api.FormatSpec{Mode: "delta", AddedLine: "A,{code}", RemovedLine: "D,{code}", LineEnding: "lf"}
+	a := api.Credential{Code: "1111", Status: "active"}
+	file := filepath.Join(dir, "update.txt")
+
+	got := render(t, tState([]api.Credential{a}, spec, 1))
+	if err := os.WriteFile(file, []byte(got), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordWritten(file, []byte(got)); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := ConfirmIfTaken(); ok || err != nil {
+		t.Fatalf("the file is still there, so it was not taken: %v %v", ok, err)
+	}
+	if got = render(t, tState([]api.Credential{a}, spec, 1)); got != "A,1111\n" {
+		t.Fatalf("an untaken file is resent: %q", got)
+	}
+	if err := RecordWritten(file, []byte(got)); err != nil {
+		t.Fatal(err)
+	}
+	// The vendor renamed it away.
+	if err := os.Rename(file, file+".done"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := ConfirmIfTaken(); !ok || err != nil {
+		t.Fatalf("a file the vendor removed or renamed is taken: %v %v", ok, err)
+	}
+	if got = render(t, tState([]api.Credential{a}, spec, 1)); got != "\n" && got != "" {
+		t.Fatalf("once taken nothing is resent: %q", got)
+	}
+}
+
+// A forced full re-emit that is never taken stays a full re-emit.
+func TestAnUntakenForceIsNotLost(t *testing.T) {
+	dir := t.TempDir()
+	RosterPath = filepath.Join(dir, "last-roster.json")
+	spec := &api.FormatSpec{Mode: "delta", AddedLine: "A,{code}", RemovedLine: "D,{code}", SortBy: "code", LineEnding: "lf"}
+	a := api.Credential{Code: "1111", Status: "active"}
+	b := api.Credential{Code: "2222", Status: "active"}
+	render(t, tState([]api.Credential{a, b}, spec, 1))
+	taken(t)
+
+	ForceNextFull()
+	got := render(t, tState([]api.Credential{a, b}, spec, 1))
+	if got != "A,1111\nA,2222\n" {
+		t.Fatalf("a force re-emits everything: %q", got)
+	}
+	if err := RecordWritten(filepath.Join(dir, "update.txt"), []byte(got)); err != nil {
+		t.Fatal(err)
+	}
+	// Not taken: the next render is still the full re-emit.
+	if got = render(t, tState([]api.Credential{a, b}, spec, 1)); got != "A,1111\nA,2222\n" {
+		t.Fatalf("an untaken force must not shrink back to an empty diff: %q", got)
+	}
+}
+
+// Removals before additions: an importer keyed by unit that read the add for
+// unit 12's new tenant and THEN the removal of its old one would leave unit 12
+// with no code at all.
+func TestRemovalsAreWrittenBeforeAdditions(t *testing.T) {
+	RosterPath = filepath.Join(t.TempDir(), "last-roster.json")
+	spec := &api.FormatSpec{Mode: "delta", AddedLine: "A,{code},{unit}", ChangedLine: "C,{code},{unit}", RemovedLine: "D,{code},{unit}", SortBy: "code", LineEnding: "lf"}
+	oldT := api.Credential{Code: "9999", UnitLabel: "12", Status: "active"}
+	moved := api.Credential{Code: "5555", UnitLabel: "7", Status: "active"}
+	render(t, tState([]api.Credential{oldT, moved}, spec, 1))
+	taken(t)
+
+	newT := api.Credential{Code: "1111", UnitLabel: "12", Status: "active"}
+	moved.UnitLabel = "8"
+	got := render(t, tState([]api.Credential{newT, moved}, spec, 1))
+	if got != "D,9999,12\nC,5555,8\nA,1111,12\n" {
+		t.Fatalf("delta order: got %q, want removals, then changes, then additions", got)
 	}
 }

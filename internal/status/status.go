@@ -6,6 +6,8 @@ package status
 import (
 	"sync"
 	"time"
+
+	"github.com/mytruckyards/unitrise-gate-bridge/internal/mask"
 )
 
 type Snapshot struct {
@@ -54,6 +56,10 @@ const ringSize = 250
 // design: codes are managed in the UnitRise console, never from the gate PC
 // (the local dashboard has no auth - it must hold no write powers over
 // access).
+//
+// Code is MASKED (all but its last two digits hidden, internal/mask): the
+// local dashboard answers any account on the PC, so it never holds a full
+// gate code. SetRoster masks whatever it is given.
 type RosterRow struct {
 	Unit   string `json:"unit"`
 	Tenant string `json:"tenant"`
@@ -70,10 +76,16 @@ var (
 )
 
 // SetRoster replaces the applied-roster view (called by the syncer after the
-// vendor file lands).
+// vendor file lands). Every code is masked on the way in, so no full code is
+// ever held here or served from here.
 func SetRoster(rows []RosterRow) {
+	masked := make([]RosterRow, len(rows))
+	for i, r := range rows {
+		r.Code = mask.Code(r.Code)
+		masked[i] = r
+	}
 	mu.Lock()
-	roster = rows
+	roster = masked
 	mu.Unlock()
 }
 

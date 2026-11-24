@@ -20,3 +20,7 @@ func runConsumeInSession(full, dir string, timeout time.Duration) (int, string, 
 func directCommand(ctx context.Context, full string) *exec.Cmd {
 	return exec.CommandContext(ctx, full)
 }
+
+// The permission check is Windows-only: there the service runs the import
+// file as LocalSystem in a folder that usually lets every user change it.
+func platformConsumeACLRefusal(string) string { return "" }

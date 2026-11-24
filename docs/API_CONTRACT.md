@@ -174,22 +174,35 @@ Modes:
 - **`full`** - the file is the complete roster each write. Suspended codes
   render via `suspendedLine`; when it's blank they are OMITTED (removal is the
   lockout for formats that can't express suspension).
-- **`delta`** - op-coded change lines against the roster this agent last
-  applied (`addedLine`/`changedLine`/`removedLine`, e.g. WinSen's A/E-prefixed
-  update.txt). The roster persists at `<config dir>/last-roster.json` and is
-  committed only after the vendor file lands on disk. A suspension that the
-  format can't express (`suspendedLine` blank) emits as a REMOVE op, and the
-  code leaves the roster so a later restore re-emits as an add. A blank
-  `removedLine` means removals are inexpressible and are skipped.
+- **`delta`** - op-coded change lines against the roster the gate software
+  has CONFIRMED taking (`addedLine`/`changedLine`/`removedLine`, e.g. WinSen's
+  A/E-prefixed update.txt). A suspension that the format can't express
+  (`suspendedLine` blank) emits as a REMOVE op, and the code leaves the roster
+  so a later restore re-emits as an add. A blank `removedLine` means removals
+  are inexpressible and are skipped. Lines are written in this order:
+  **removals, then changes, then additions**, so an importer keyed by unit
+  never deletes the tenant it just added (2026-11-20).
+
+  **Delta confirmation (agent 0.6.0, 2026-11-20).** The agent keeps two
+  rosters beside `config.json`: `last-roster.json` (CONFIRMED: what the gate
+  software has taken) and `last-roster.pending.json` (PENDING: what the file on
+  disk tells it, with the file's path and a hash). Every render diffs against
+  the confirmed roster. The pending roster is promoted only when the consume
+  command exits 0, or, with no consume command, when the vendor has removed or
+  renamed the file by the next cycle. A file still there unimported is replaced
+  by a SUPERSET diff (every change since the confirmed roster), so a failed
+  import never loses a change; at worst a change is sent twice. An agent before
+  0.6.0 advanced the roster as soon as the file landed, so a failed consume
+  lost the earlier lines.
 
 Every line - including the last - ends with the configured line ending
 (`crlf` default; DOS-lineage importers require the trailing carriage return).
 
 **Force semantics:** the state carries `forceNonce`. When it differs from the
-roster's remembered nonce (console "Force full update"), or the agent's local
+confirmed roster's nonce (console "Force full update"), or the agent's local
 Force button was pressed, delta mode treats the roster as empty and re-emits
-the entire roster as adds; full mode simply rewrites. This is also the recovery
-path when a consume run fails after the file was written.
+the entire roster as adds; full mode simply rewrites. A forced re-emit that is
+not taken stays a full re-emit on the next write.
 
 Semantics: **full state, every time.** The list is the complete set of codes
 that should exist at the gate. Suspended codes are included with
@@ -223,6 +236,13 @@ support techs). Worst-case suspension latency = one poll interval.
 Body: `{ "agentVersion": "1.0.0", "os": "windows/amd64", "lastApplyAt": "...",
 "lastApplyHash": "...", "ok": true, "detail": "" }`
 
+Cadence (agent 0.6.0): one heartbeat right after every sync cycle, plus one on
+the agent's own clock every 60-90 seconds whatever the poll interval is, so an
+agent polling every hour still reads online (the server's window is 10
+minutes). The clocked heartbeats start once the first cycle has finished.
+`lastApplyAt` is omitted until the agent has applied a state (an agent before
+0.6.0 sent `"0001-01-01T00:00:00Z"` there).
+
 Server records it as the link's `agent` state (`agent.lastHeartbeatAt` and
 the fields above); the console's red offline banner + the N-hours-offline
 alert key off it. Since 2026-11-13 this is one targeted write of the agent's
@@ -236,6 +256,26 @@ paired agent is offline), never the whole code list.
 
 Body: `{ "stateHash": "...", "wroteFile": "C:\\PTI\\UPDATE.DAT",
 "consumeExit": 0, "consumeOutput": "<first 2KB>" }`
+
+`consumeOutput` (agent 0.6.0) has every run of three or more digits replaced
+by asterisks (`result 0:258` reads `result 0:***`): a vendor tool can echo the
+lines it imported, and those are gate codes. The server masks it again.
+`consumeExit: -2` means the import file was refused or could not start; the
+output is then the agent's own sentence (for example the permission refusal
+below) and is not masked.
+
+**The system account never runs a file ordinary users can change (agent
+0.6.0).** When the Windows service runs the consume file itself (nobody signed
+in, so it runs as LocalSystem in session 0), or the agent runs from an elevated
+prompt, it first reads the permissions of the file and its folder. When a
+broad group (Everyone, Authenticated Users, Users, INTERACTIVE, Guests, Domain
+Users and the like) can write, add files to, delete in, or re-permission
+either one, or the folder has no permission list at all, the file is NOT run:
+`consumeExit: -2`, `ok: false`, and the detail reads, for example, "The import
+file's folder (C:\\PTI) can be changed by any user on this PC (Authenticated
+Users has write access), so the Bridge won't run Ptisend.bat as the system
+account. Limit the folder to Administrators." Run in the signed-in user's
+session, the file runs as that user, so no check is needed there.
 
 Audit trail: the console shows "last applied" + consume output per facility.
 Recorded the same way as the heartbeat: one targeted write, pinned to the
@@ -251,19 +291,100 @@ an IT person clicks this before any credentials exist.
 
 ### `GET /api/gate-bridge/v1/update-check?platform=<key>` (signed)
 
-`{ "latestVersion": "0.3.0", "downloadUrl": "<base>/<file>|null", "sha256Url":
-"<base>/SHA256SUMS|null" }`. `latestVersion` comes from the backend's
+`{ "latestVersion": "0.6.0", "downloadUrl": "<url>|null", "sha256Url":
+"<url>|null" }`. `latestVersion` comes from the backend's
 `GATE_AGENT_LATEST_VERSION` env (bumped when binaries are published); URLs are
-null until `GATE_BRIDGE_DOWNLOAD_BASE` is set. Platform keys match the
-download endpoint. The query string is NOT part of the signature base (both
-sides sign the bare path).
+null until binaries are published. Platform keys match the download endpoint.
+The query string is NOT part of the signature base (both sides sign the bare
+path).
+
+**Signed releases (agent 0.6.0, 2026-11-20).** The agent no longer trusts the
+server to name a binary. It installs an update only when:
+
+- `latestVersion` is a plain `x.y.z`, newer than its own;
+- `downloadUrl` is EXACTLY
+  `https://github.com/tron-stack/unitrise-gate-bridge/releases/download/v<latestVersion>/<asset>`
+  (the release base compiled into the agent; `<asset>` is this platform's
+  `unitrise-gate-<os>-<arch>[.exe]`), and `sha256Url` is the `SHA256SUMS` in
+  that same folder. A "latest" link, another host or another version's folder
+  is refused before anything is downloaded;
+- `SHA256SUMS.sig` (fetched beside `SHA256SUMS`) is a valid Ed25519 signature,
+  by the release key whose public half is compiled into the agent
+  (`release-signing.pub`), over the bytes
+  `"unitrise-gate-bridge release v1\nversion <x.y.z>\n"` followed by
+  `SHA256SUMS` byte for byte. The version is part of what is signed, so an
+  old release can't be offered as a newer one;
+- the binary's sha256 matches its line in the signed `SHA256SUMS`.
+
+A build with no compiled-in key (`unitrise-gate version` says so) refuses every
+self-update. Downloads are https only, redirects included (GitHub hands
+release assets to its storage host). So the backend's update-check must build
+`downloadUrl` and `sha256Url` from the versioned folder for
+`GATE_AGENT_LATEST_VERSION`, not from the `latest/download` base the installer
+links use. Agents before 0.6.0 accept any https URL and check only the
+checksum.
 
 The agent NEVER self-replaces on its own: the run loop checks daily and only
 logs availability (the console shows the same chip from heartbeat versions);
-the swap is `unitrise-gate update`, run by a person on the site PC. That
-command downloads the platform binary, verifies it against `SHA256SUMS` when
-published (mismatch = hard abort), renames the running binary to `.old`, moves
-the new one in place, and prints the service-restart step.
+the swap is `unitrise-gate update`, or the dashboard's Install update button,
+run by a person on the site PC. That downloads and verifies as above (any
+failure = hard abort, nothing installed), renames the running binary to
+`.old`, moves the new one in place, and restarts the service onto it.
+
+## Pairing on the site PC (agent 0.6.0, 2026-11-20)
+
+The local dashboard (`http://127.0.0.1:47810`) has no sign-in, so what it may
+do is limited by what an ordinary account on the PC may do:
+
+- **A machine that is already paired** accepts a dashboard re-pair only to
+  replace the access key and the access secret, proven live against the server
+  it is paired with. A different facility, API endpoint or save folder is
+  refused with the Administrator step.
+- **An unpaired machine** pairs from the dashboard only with UnitRise's own
+  server (`https://api.unitrise.com`), or with a server an Administrator already
+  wrote into `config.json`. A developer running the agent with
+  `UNITRISE_GATE_DEV=1` may pair it with another server (only an Administrator
+  can set the service's environment).
+- **The CLI** (`unitrise-gate pair`) sends a key rotation or a first pairing
+  with UnitRise's server through the running agent, as before. A different
+  facility, `--endpoint` or `--save` is written to the protected `config.json`
+  directly, which needs an Administrator prompt, and the running service is
+  restarted onto it. `--secret -` reads the secret from standard input
+  (`type secret.txt | unitrise-gate pair --secret - ...`) so it stays out of the
+  shell's history.
+- The dashboard's Gate codes view shows each code masked to its last two
+  digits; no local API answer carries a full code.
+
+## The settings folder (agent 0.6.0, 2026-11-20)
+
+The pairing lives in `%ProgramData%\UnitRiseGateBridge\config.json`, read by
+the service as SYSTEM. Any account may create a folder in `%ProgramData%`, so:
+
+- both installers create (or reset) that folder BEFORE the service is
+  installed or started: owned by Administrators, SYSTEM and Administrators
+  full control, inheritance off (`unitrise-gate secure-config`, which
+  `install.ps1` runs);
+- the service does the same at every start, before it reads anything there,
+  the log included;
+- `config.json`, the rosters, the own-files record and the log are trusted
+  only when the folder is a real folder (not a link) and the folder and each
+  file are owned by SYSTEM or Administrators with nobody else able to change
+  them. Otherwise the agent removes a link in the folder's place (never what
+  it points at), limits the folder, deletes those files, logs and shows why,
+  and runs unpaired until it is paired again (the setup-mode rules above).
+  A folder that passes keeps its pairing.
+
+## Files the agent writes
+
+Every file the agent replaces (the gate file, `config.json`, the delta
+rosters) is written to a randomly named temporary file beside it (created
+exclusively, so a planted link is never written through), flushed to disk,
+then renamed into place (on Windows the rename writes through; elsewhere the
+folder is flushed too). The agent's own default outputs (`UNITRISE-GATE-TEST.txt`
+and `GATECODES.TXT`, names no gate software reads) are recorded with a hash,
+and once the output moves to another file the agent removes its old one, only
+when it is still a plain file holding exactly what the agent wrote. A test
+file left by an older agent is recognised by its first line.
 
 ## Failure semantics (both sides must honor)
 

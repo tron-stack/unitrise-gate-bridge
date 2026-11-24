@@ -205,12 +205,14 @@ func (c *Client) postJSON(path string, payload any) error {
 }
 
 type Heartbeat struct {
-	AgentVersion  string    `json:"agentVersion"`
-	OS            string    `json:"os"`
-	LastApplyAt   time.Time `json:"lastApplyAt,omitempty"`
-	LastApplyHash string    `json:"lastApplyHash,omitempty"`
-	OK            bool      `json:"ok"`
-	Detail        string    `json:"detail,omitempty"`
+	AgentVersion string `json:"agentVersion"`
+	OS           string `json:"os"`
+	// A pointer so "never applied yet" sends NOTHING: a zero time.Time is not
+	// empty to encoding/json, and went out as "0001-01-01T00:00:00Z".
+	LastApplyAt   *time.Time `json:"lastApplyAt,omitempty"`
+	LastApplyHash string     `json:"lastApplyHash,omitempty"`
+	OK            bool       `json:"ok"`
+	Detail        string     `json:"detail,omitempty"`
 }
 
 func (c *Client) SendHeartbeat(hb Heartbeat) error {
@@ -218,9 +220,12 @@ func (c *Client) SendHeartbeat(hb Heartbeat) error {
 }
 
 type Applied struct {
-	StateHash     string `json:"stateHash"`
-	WroteFile     string `json:"wroteFile"`
-	ConsumeExit   int    `json:"consumeExit"`
+	StateHash   string `json:"stateHash"`
+	WroteFile   string `json:"wroteFile"`
+	ConsumeExit int    `json:"consumeExit"`
+	// The consume command's output with every run of three or more digits
+	// masked (internal/mask DigitRuns): a vendor tool can echo the lines it
+	// imported, and those are gate codes.
 	ConsumeOutput string `json:"consumeOutput,omitempty"`
 }
 
@@ -264,11 +269,27 @@ func (c *Client) UpdateCheck(platform string) (*UpdateInfo, error) {
 	return &info, nil
 }
 
-// Download fetches an arbitrary URL (the published binary / checksum file).
-// Uses its own long-timeout client - a binary over site DSL can outlast the
-// API client's 30s budget. Returns the raw bytes, capped at 256MB.
+// Download fetches a release file (the published binary / checksum /
+// signature; internal/update decides which URLs are allowed at all). Uses its
+// own long-timeout client - a binary over site DSL can outlast the API
+// client's 30s budget. https only, redirects included (GitHub hands release
+// assets to its storage host). Returns the raw bytes, capped at 256MB.
 func (c *Client) Download(url string) ([]byte, error) {
-	dl := &http.Client{Timeout: 5 * time.Minute}
+	if !strings.HasPrefix(url, "https://") {
+		return nil, fmt.Errorf("refusing a non-https download (%s)", url)
+	}
+	dl := &http.Client{
+		Timeout: 5 * time.Minute,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			if req.URL.Scheme != "https" {
+				return fmt.Errorf("refusing a redirect to a non-https download (%s)", req.URL)
+			}
+			return nil
+		},
+	}
 	resp, err := dl.Get(url)
 	if err != nil {
 		return nil, err

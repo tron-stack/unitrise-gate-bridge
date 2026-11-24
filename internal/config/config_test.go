@@ -1,6 +1,9 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -65,5 +68,31 @@ func TestNormalizeEndpoint(t *testing.T) {
 		if got := NormalizeEndpoint(in); got != want {
 			t.Fatalf("NormalizeEndpoint(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// A save replaces config.json whole and leaves no temp file beside it (the
+// durable write is internal/fsutil's; this is the config's use of it).
+func TestSaveReplacesTheConfigWhole(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("UNITRISE_GATE_CONFIG", filepath.Join(dir, "config.json"))
+	c := base()
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	c.AccessSecret = "s2"
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load()
+	if err != nil || got.AccessSecret != "s2" {
+		t.Fatalf("reload = %+v, %v", got, err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("a save left files beside config.json: %v", entries)
+	}
+	if fi, _ := os.Stat(Path()); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
+		t.Fatalf("config.json mode = %v, want 0600 (it holds the access secret)", fi.Mode().Perm())
 	}
 }
